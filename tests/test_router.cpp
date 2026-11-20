@@ -4,7 +4,7 @@
 #include <string_view>
 
 #include <boost/asio/awaitable.hpp>
-#include <fut/route.hpp>
+#include <fut/http/route.hpp>
 #include "router.hpp"
 
 namespace asio = boost::asio;

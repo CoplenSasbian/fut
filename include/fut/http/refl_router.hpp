@@ -1,6 +1,6 @@
 #pragma once
 
-// fut/refl_router.hpp -- the GENERIC namespace scanner.
+// fut/http/refl_router.hpp -- the GENERIC namespace scanner.
 //
 // Walks the app namespace, finds CLASS TYPES carrying scannable-derived
 // annotations (std::meta::is_base_of_type), and delegates to each
@@ -24,7 +24,7 @@
 #  error "fut requires C++26 std::meta reflection (GCC 15+ with -freflection)"
 #endif
 
-#include <fut/route.hpp>
+#include <fut/http/route.hpp>
 
 namespace fut::refl {
 

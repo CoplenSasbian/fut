@@ -1,14 +1,14 @@
 #pragma once
 
-// fut/bind.hpp -- parameter binding annotations (invoke-machinery vocabulary).
+// fut/http/bind.hpp -- parameter binding annotations.
 //
-// These are NOT annotation_base-derived: they are read while the invoke
-// machinery builds arguments, not scanned as route producers.
+// Read by the invoke machinery while building arguments; the scanner never
+// sees them. NOT scannable-derived.
 
 #include <cstddef>
-
-#include <fut/route.hpp>
 #include <string_view>
+
+#include <fut/http/route.hpp>
 
 namespace fut {
 

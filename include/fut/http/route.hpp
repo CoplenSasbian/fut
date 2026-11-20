@@ -1,13 +1,10 @@
 #pragma once
 
-// fut/route.hpp -- public ABI shared by the server executable and every app DLL.
+// fut/http/route.hpp -- the HTTP vocabulary: request/response, path matching,
+// route records, app tables, the method enum, and the scannable contract.
 //
-// An "app" is a Django-style concept: a name, a URL prefix, and a set of
-// annotated controllers. Each app DLL exports one fut::app_table; the
-// server dispatches (method, path) against the records of the loaded tables.
-//
-// All modules must be built with the same compiler and runtime. Bump
-// fut::abi_version whenever this header changes incompatibly.
+// This file has no dependencies beyond the Asio awaitable (used in the
+// route_record's invoke signature) and the standard library.
 
 #include <array>
 #include <cstddef>
@@ -33,14 +30,14 @@ inline constexpr const char* library_version = "0.2.0";
 #endif
 
 // ---------------------------------------------------------------------------
-// method -- the HTTP verb, an enum (not strings)
+// method -- the HTTP verb
 // ---------------------------------------------------------------------------
 
 enum class method : std::uint8_t {
     GET,
     POST,
     PUT,
-    DEL,   // "DELETE" is a Windows macro; DEL avoids the clash
+    DEL,   // "DELETE" is a Windows macro
 };
 
 // ---------------------------------------------------------------------------
@@ -74,9 +71,6 @@ struct text_buf {
 // is fut::controller: the scanner finds controller-annotated CLASS TYPES,
 // passes the class's std::meta::info to controller::operation(), which
 // walks the class's member functions for http_action annotations.
-//
-// Verbs (http_get etc.) do NOT derive scannable -- they are http_action
-// values read by the controller's operation(), not by the namespace scan.
 // ---------------------------------------------------------------------------
 
 struct scannable {};
@@ -108,7 +102,7 @@ struct response {
 };
 
 // ---------------------------------------------------------------------------
-// path matching
+// path matching: literal segments match, "{name}" segments capture
 // ---------------------------------------------------------------------------
 
 struct path_match {

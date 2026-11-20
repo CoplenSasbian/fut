@@ -11,10 +11,10 @@
 
 #include <boost/asio.hpp>
 
-#include <fut/annotate.hpp>
+#include <fut/http/annotate.hpp>
 #include <fut/json.hpp>
 #include <fut/log.hpp>
-#include <fut/refl_router.hpp>
+#include <fut/http/refl_router.hpp>
 
 #include "app_loader.hpp"
 #include "config.hpp"

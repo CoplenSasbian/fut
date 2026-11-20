@@ -1,6 +1,6 @@
 #pragma once
 
-// fut/annotate.hpp -- C++26 annotation types.
+// fut/http/annotate.hpp -- C++26 annotation types.
 //
 // http_action{path, method} is the verb data; http_get etc. are constexpr
 // functions returning http_action values. GCC records the annotation type
@@ -16,8 +16,8 @@
 
 #include <meta>
 
-#include <fut/invoke.hpp>
-#include <fut/route.hpp>
+#include <fut/http/invoke.hpp>
+#include <fut/http/route.hpp>
 
 namespace fut {
 

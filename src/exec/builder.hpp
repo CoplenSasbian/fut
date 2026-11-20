@@ -22,7 +22,7 @@
 #include <vector>
 
 #include <fut/log.hpp>
-#include <fut/route.hpp>
+#include <fut/http/route.hpp>
 
 namespace fut::exec {
 

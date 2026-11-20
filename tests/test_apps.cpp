@@ -9,7 +9,7 @@
 
 #include <boost/asio.hpp>
 #include <fut/json.hpp>
-#include <fut/route.hpp>
+#include <fut/http/route.hpp>
 
 #include "app_loader.hpp"
 

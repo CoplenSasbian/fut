@@ -1,6 +1,6 @@
 #pragma once
 
-// fut/invoke.hpp -- the invoke machinery shared by all annotations.
+// fut/http/invoke.hpp -- the invoke machinery shared by all annotations.
 //
 // Parameter binding (request body DTOs, query/path/header values, the raw
 // request escape hatch), the free-function and controller-member invoke
@@ -23,9 +23,9 @@
 #  error "fut requires C++26 std::meta reflection (GCC 15+ with -freflection)"
 #endif
 
-#include <fut/bind.hpp>
+#include <fut/http/bind.hpp>
 #include <fut/json.hpp>
-#include <fut/route.hpp>
+#include <fut/http/route.hpp>
 #include <fut/url.hpp>
 
 namespace fut::refl {
