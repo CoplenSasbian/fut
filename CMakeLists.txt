@@ -28,6 +28,9 @@ if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_VERSION VERSIO
 endif()
 add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-freflection>)
 
+# Log call sites print file names relative to the project root.
+add_compile_definitions(FUT_PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+
 # ---- output layout: build/<preset>/bin/fut_server.exe + bin/apps/*.dll ----
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 

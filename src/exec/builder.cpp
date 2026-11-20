@@ -13,6 +13,7 @@
 
 #include <fut/annotate.hpp>
 #include <fut/json.hpp>
+#include <fut/log.hpp>
 #include <fut/refl_router.hpp>
 
 #include "app_loader.hpp"
@@ -77,19 +78,42 @@ void log_exception(std::exception_ptr ep) {
     try {
         std::rethrow_exception(std::move(ep));
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "[listen] exception: %s\n", e.what());
+        fut::log::core_log.error("listener exception: {}", e.what());
     }
 }
 
 } // namespace
 
 int server_builder::run() {
+    // Logging chains: colourised console plus a rotating file. The global level
+    // comes from the configuration and is applied after it is read.
+    fut::log::add_chain(fut::log::chain_options{
+        .minimum_level = fut::log::level::info,
+        .formatter = fut::log::pattern_formatter{"{T} [{L:<8}] {g:<12} {m}"},
+        .sink = fut::log::console_sink{.color = true},
+    });
+    fut::log::add_chain(fut::log::chain_options{
+        .minimum_level = fut::log::level::trace,
+        .formatter = fut::log::pattern_formatter{"{T} [{L:<8}] {g:<12} {s}: {m}"},
+        .sink = fut::log::file_sink{.path = "logs/fut.log",
+                                    .max_bytes = 2 * 1024 * 1024, .max_files = 3},
+    });
+
+    int exit_code = 1;
     try {
         config cfg = load_config(cfg_file_);
         if (host_) cfg.host = *host_;
         if (port_) cfg.port = *port_;
         if (threads_) cfg.threads = *threads_;
         if (apps_dir_) cfg.apps_dir = *apps_dir_;
+        {
+            const std::string level_name = log_level_ ? *log_level_ : cfg.log_level;
+            if (const auto parsed = fut::log::from_string<fut::log::level>(level_name)) {
+                fut::log::set_level(*parsed);
+            } else {
+                fut::log::warning("unknown log level '{}', falling back to info", level_name);
+            }
+        }
         const std::chrono::seconds timeout =
             timeout_ ? *timeout_ : std::chrono::seconds(cfg.request_timeout_seconds);
 
@@ -114,10 +138,10 @@ int server_builder::run() {
         const int extra = std::max(0, cfg.threads - 1);
         for (int i = 0; i < extra; ++i) pool.emplace_back([&ioc] { ioc.run(); });
 
-        std::fprintf(stdout,
-                     "[main] fut %s (ABI %u) starting: %d thread(s), %d app DLL(s); Ctrl+C to stop\n",
-                     fut::library_version, (unsigned)fut::abi_version,
-                     (int)cfg.threads, (int)(rt.apps().size() - 1 - builtins_.size()));
+        fut::log::core_log.info("fut {} (ABI {}) starting: {} thread(s), {} app DLL(s); Ctrl+C to stop",
+                                 fut::library_version, (unsigned)fut::abi_version,
+                                 (int)cfg.threads,
+                                 (int)(rt.apps().size() - 1 - builtins_.size()));
 
         asio::co_spawn(ioc, srv.listen(), log_exception);
 
@@ -125,12 +149,15 @@ int server_builder::run() {
         for (auto& t : pool) t.join();
 
         g_status_router = nullptr;
-        std::fprintf(stdout, "[main] stopped\n");
+        fut::log::core_log.info("stopped");
+        exit_code = 0;
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "[main] fatal: %s\n", e.what());
-        return 1;
+        fut::log::core_log.critical("fatal: {}", e.what());
     }
-    return 0;
+
+    // Flush and join the worker threads before the CRT starts tearing down.
+    fut::log::shutdown();
+    return exit_code;
 }
 
 } // namespace fut::exec

@@ -3,5 +3,6 @@
   "port": 8080,
   "threads": 2,
   "apps_dir": "apps",
-  "request_timeout_seconds": 30
+  "request_timeout_seconds": 30,
+  "log_level": "info"
 }

@@ -15,6 +15,7 @@ struct config {
     int threads{1};
     std::string apps_dir{"apps"};
     int request_timeout_seconds{30};
+    std::string log_level{"info"};
 };
 
 // Reads a JSON config file; returns defaults when the file does not exist,

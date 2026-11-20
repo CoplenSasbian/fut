@@ -1,10 +1,10 @@
 #include "server.hpp"
 
-#include <cstdio>
 #include <utility>
 #include <vector>
 
 #include <fut/json.hpp>
+#include <fut/log.hpp>
 
 namespace fut::exec {
 
@@ -14,15 +14,17 @@ namespace http = beast::http;
 
 namespace {
 
+constexpr auto srv_log = fut::log::grp("server");
+
 // co_spawn completion handler: log exceptions, keep other sessions alive.
 void log_exception(std::exception_ptr ep) {
     if (!ep) return;
     try {
         std::rethrow_exception(std::move(ep));
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "[session] exception: %s\n", e.what());
+        srv_log.error("session exception: {}", e.what());
     } catch (...) {
-        std::fprintf(stderr, "[session] unknown exception\n");
+        srv_log.error("session exception: unknown");
     }
 }
 
@@ -105,7 +107,7 @@ asio::awaitable<void> server::listen() {
     acceptor_.set_option(tcp::acceptor::reuse_address(true));
     acceptor_.bind(ep);
     acceptor_.listen(asio::socket_base::max_listen_connections);
-    std::fprintf(stdout, "[server] listening on http://%s:%u\n", host_.c_str(), (unsigned)port_);
+    srv_log.info("listening on http://{}:{}", host_, (unsigned)port_);
 
     for (;;) {
         auto [ec, sock] = co_await acceptor_.async_accept(asio::as_tuple(asio::use_awaitable));

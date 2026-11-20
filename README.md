@@ -1,66 +1,64 @@
-# fut —— C++26 协程 Web 服务器（exec + 业务动态库）
+# fut
 
-主程序 ``fut_server.exe`` 负责监听、会话协程、加载业务动态库，**基本不用重编译**；
-每个业务前缀（`/api/admin`、`/api/web`）是一个独立 app 动态库，**更新业务 = 编译对应 app → 复制 DLL**。
+C++26 coroutine web-server library: a small server executable plus **annotation-routed app DLLs**.
+Business logic lives in one DLL per URL prefix; deploying an update means rebuilding that DLL and
+swapping the file — the server and every other app stay untouched.
 
-业务函数**注解即路由**（C++26 P3394 注解 + std::meta 反射）：`[[=fut::http_post("/echo")]]` 声明即注册，
-参数（请求体 DTO / query / 路径占位符 / 请求头）按形参注解自动绑定。
+Actions are **free functions**; their C++26 annotations (P3394) are the routes and the parameter
+bindings. Reflection is a **hard requirement**: the library is built on `std::meta` (P2996) and has
+no reflection-free fallback path.
 
-技术栈：**Asio（协程 awaitable）+ Boost.Beast（HTTP）+ C++26（std::meta 静态反射 + 注解）+ glaze（反射式 JSON）+ doctest（测试）**。
+## Features
 
-## 目录结构
+* Asio coroutines (`asio::awaitable`) + Boost.Beast HTTP server
+* Annotation-declared routes on free functions: `[[=fut::http_post("/echo")]]`
+* Automatic parameter binding: request body DTOs, query/path/header values, raw request escape hatch
+* Return-type adaptation: `fut::response` passthrough, **plain strings served as text/plain**,
+  glaze-serializable DTOs as JSON, anything else is a **compile error**
+* One DLL per app (Django-style); the DLL exports a compile-time route table
+* Fluent `server_builder` for the host executable (port, threads, timeouts, ...)
+* Asynchronous logging: colour console + rotating file chains, reflection-based level names
+* doctest suite with full end-to-end coverage (loads the real DLLs)
 
-```
-fut/
-├── CMakeLists.txt          根构建：C++26、-freflection、输出布局
-├── CMakePresets.json       debug / release / sandbox 三套 preset
-├── vcpkg.json              依赖清单：boost-beast、boost-asio、glaze、doctest
-├── config.json             运行配置
-├── include/fut/            ★ exec 与所有 app DLL 共享的接口（ABI 契约）
-│   ├── app.hpp             request / response / fut::app 虚接口
-│   ├── app_entry.hpp       FUT_IMPLEMENT_APP：导出 C ABI（create/destroy/abi_version）
-│   ├── version.hpp         fut::abi_version —— 接口不兼容时 bump
-│   ├── annotate.hpp        C++26 注解类型：http_get/post/put/delete、from_body/query/path/header
-│   ├── refl_router.hpp     注解路由：编译期路由表 + 参数绑定 + dispatch
-│   ├── reflect.hpp         C++26 std::meta 工具（成员枚举/遍历）
-│   ├── json.hpp            glaze 序列化帮助（fut::json / fut::parse / fut::error）
-│   └── url.hpp             query 解析 + URL 解码
-├── src/exec/               主程序（main / server / router / app_loader / config）
-├── apps/admin/             /api/admin 业务库（注解路由）
-├── apps/web/               /api/web   业务库（注解路由）
-└── tests/                  doctest：路由 / 反射 / 注解路由 / DLL 全链路
-```
+## Requirements (hard)
 
-## 环境要求（本机已配好）
+| Component | Requirement |
+| --- | --- |
+| Compiler | **GCC >= 15 with `-freflection`** (std::meta reflection; no fallback path) |
+| Dependencies | vcpkg: `boost-beast`, `boost-asio`, `glaze`, `doctest` |
+| Build | CMake >= 3.25 + Ninja |
+| Triplet | `x64-mingw-dynamic` |
 
-| 组件 | 位置 | 说明 |
-| --- | --- | --- |
-| GCC 16.2 | `D:/mingw64` | MinGW-Builds，支持 C++26 与 `-freflection` |
-| vcpkg | `D:/vcpkg/vcpkg` | triplet 用 `x64-mingw-dynamic` |
-| CMake 4.5.1 + Ninja | `D:/fut/.tools` | 便携版，随仓库走 |
+The top-level `CMakeLists.txt` fails configuration with a clear message when the toolchain cannot
+provide `std::meta`; the public headers `#error` as a second line of defense.
 
-`.vcpkg/` 是 vcpkg 的工作区克隆（约 200MB，已 gitignore），供 `sandbox` preset 使用。
+## Getting started
 
-## 构建
+Set two environment variables (adjust to your machine):
 
 ```bash
-# 常规构建（首次会下载安装 vcpkg 依赖，约 10 分钟；之后走二进制缓存秒装）
+export MINGW_ROOT=/d/mingw64        # GCC 15+ toolchain root
+export VCPKG_ROOT=/d/vcpkg/vcpkg    # a vcpkg checkout
+```
+
+Build and test:
+
+```bash
 cmake --preset release
 cmake --build --preset release
 ctest --preset release
-
-# 在 DSH 沙箱里构建用 sandbox preset（沙箱拦工作区外写入）：
-#   它使用工作区内 .vcpkg 克隆、把 TMP/TEMP 重定向到 build/tmp、
-#   并用 CMAKE_CXX_COMPILER_WORKS 跳过沙箱下会失败的编译器 try_compile 探测
-cmake --preset sandbox
-cmake --build --preset sandbox
-ctest --preset sandbox
 ```
 
-产物（自包含，MinGW 运行时 DLL 已拷进 bin）：
+Run (from the repository root, which holds `config.json`):
+
+```bash
+./build/release/bin/fut_server.exe          # or: --port 9000 --threads 4 --log-level debug
+```
+
+Artifacts (`build/<preset>/bin`, self-contained — runtime DLLs included):
 
 ```
-build/sandbox/bin/
+bin/
 ├── fut_server.exe
 ├── libstdc++-6.dll  libgcc_s_seh-1.dll  libwinpthread-1.dll
 ├── test_*.exe
@@ -69,145 +67,211 @@ build/sandbox/bin/
     └── fut_app_web.dll
 ```
 
-## 运行
-
-在仓库根目录（有 `config.json`）：
-
-```bash
-./build/sandbox/bin/fut_server.exe
-# 或自定义：fut_server -c other.json --apps-dir 某目录
-```
-
 ```bash
 curl http://127.0.0.1:8080/api/core/status
-# {"service":"fut","version":"0.1.0","abi":1,"apps":[...三个 app...]}
-
-curl http://127.0.0.1:8080/api/admin/meta        # C++26 std::meta 成员枚举演示
-# {"members":[{"name":"name","value_kind":"string"},...],"names":["name","rank","active","tags"]}
-
-curl -X POST -d '{"message":"hi","count":4}' http://127.0.0.1:8080/api/admin/echo   # 请求体 DTO 绑定
-curl "http://127.0.0.1:8080/api/web/hello?name=fut"                                  # query 绑定
-curl -X POST -d '{"a":6,"b":7,"op":"mul"}' http://127.0.0.1:8080/api/web/calc        # 42
-curl http://127.0.0.1:8080/api/web/sum/6/7          # 路径占位符 -> {"a":6,"b":7,"sum":13}
-curl http://127.0.0.1:8080/api/admin/whoami         # 返回值 DTO 自动序列化 -> {"app":"admin","user":"root"}
+curl http://127.0.0.1:8080/api/admin/ping                 # {"pong":true,"app":"admin"}
+curl -X POST -d '{"message":"hi","count":4}' http://127.0.0.1:8080/api/admin/echo
+curl http://127.0.0.1:8080/api/web/sum/6/7                # {"a":6,"b":7,"sum":13}
+curl http://127.0.0.1:8080/api/admin/raw                  # plain text, text/plain
 ```
 
-## 注解路由（C++26 P3394 + std::meta）
+## Writing an app
 
-业务函数**注解即路由、参数自动绑定**，编译期由 std::meta 收集为静态路由表：
+An app is a Django-style unit: a name, a URL prefix, and a set of annotated free functions.
+No base classes, no registration boilerplate — one macro exports the compiled table.
 
 ```cpp
-class web_app final : public fut::app {
-public:
-    asio::awaitable<fut::response> handle(const fut::request& req) override {
-        co_return co_await fut::refl::dispatch(*this, req);   // ← 只需要这一行
-    }
+#include <fut/annotate.hpp>
+#include <fut/json.hpp>
+#include <fut/refl_router.hpp>
 
-    [[=fut::http_get("/ping")]]
-    asio::awaitable<fut::response> ping() { co_return fut::json(pong{}); }
+namespace asio = boost::asio;
 
-    // 路径占位符绑定
-    [[=fut::http_get("/sum/{a}/{b}")]]
-    asio::awaitable<fut::response> sum([[=fut::from_path("a")]] long long a,
-                                       [[=fut::from_path("b")]] long long b) {
-        co_return fut::json(sum_out{a, b, a + b});
-    }
+namespace {
 
-    // key 省略时默认用参数名：等效 from_query("name")
-    [[=fut::http_get("/hello")]]
-    asio::awaitable<fut::response> hello([[=fut::from_query{}]] std::string name) {
-        co_return fut::json(hello_out{"hello, " + name});
-    }
+struct calc_in { double a{}; double b{}; std::string op{}; };
+struct calc_out { double result{}; std::string op{}; };
+struct sum_out { long long a{}; long long b{}; long long sum{}; };
 
-    // 请求体 DTO 绑定
-    [[=fut::http_post("/calc")]]
-    asio::awaitable<fut::response> calc([[=fut::from_body{}]] calc_in in) {
-        co_return fut::json(calc_out{in.a * in.b, in.op});
-    }
+[[=fut::http_get("/ping")]]
+asio::awaitable<std::string> ping() { co_return "pong"; }          // plain string -> text/plain
 
-    // 直接返回 DTO（非 response）-> 框架自动 glaze 序列化为 200 JSON
-    [[=fut::http_get("/time")]]
-    asio::awaitable<time_out> time() { co_return time_out{/*...*/}; }
-};
+[[=fut::http_post("/calc")]]
+asio::awaitable<calc_out> calc([[=fut::from_body{}]] calc_in in) {  // JSON body -> DTO
+    co_return calc_out{in.a * in.b, in.op};
+}
+
+[[=fut::http_get("/sum/{a}/{b}")]]
+asio::awaitable<sum_out> sum([[=fut::from_path("a")]] long long a,   // path placeholders
+                             [[=fut::from_path("b")]] long long b) {
+    co_return sum_out{a, b, a + b};
+}
+
+} // namespace
+
+FUT_EXPORT_APP("web", "/api/web", ^^ping, ^^calc, ^^sum)
 ```
 
-**绑定规则**：
+Add the app directory to the top-level `CMakeLists.txt` (`add_subdirectory(apps/pay)`), build,
+and the server picks it up by prefix on the next start.
 
-| 形参写法 | 数据来源 |
+### Parameter binding
+
+| Parameter annotation | Source |
 | --- | --- |
-| `[[=fut::from_body{}]] echo_in in` | 请求体 JSON -> 该形参类型（glaze 编译期反射解析） |
-| `[[=fut::from_query("k")]]` / `[[=fut::from_query{}]]` | query 参数（key 空则用参数名） |
-| `[[=fut::from_path("a")]]` / `[[=fut::from_path{}]]` | 路径 `{占位}` 段 |
-| `[[=fut::from_header("X")]]` | 请求头 |
-| 无注解且形参为 `const fut::request&` | 原始请求（逃生舱） |
-| 其它（无注解） | 编译错误（static_assert 提示） |
+| `[[=fut::from_body{}]]` | request body JSON, parsed into the parameter type (glaze) |
+| `[[=fut::from_query("k")]]` / `[[=fut::from_query{}]]` | query parameter (empty key -> parameter name) |
+| `[[=fut::from_path("a")]]` / `[[=fut::from_path{}]]` | `{placeholder}` segment of the path pattern |
+| `[[=fut::from_header("X-K")]]` | request header |
+| none, type `const fut::request&` | the raw request (escape hatch) |
+| none, anything else | **compile error** (static_assert explains) |
 
-绑定失败（非法 JSON / 缺参数）抛 `fut::bind_error`，`dispatch` 转成 **400**；未命中转 **404**。
-标量参数（int/long/double/bool...）用 glaze 从原始串解析，`std::string` 直取（URL 解码）。
-路由方法需为 **public**（拼接处做访问检查）。
+Binding failures (invalid JSON, missing value) become **400** responses; unmatched routes become **404**.
+Scalars are parsed by glaze; `std::string` parameters are URL-decoded as-is.
 
-**GCC 16.2 实现踩坑记录**（已体现在 `refl_router.hpp`）：
+### Return types
 
-1. 注解常量值尚未开放 `[:ann:]` 直接拼接（报 "cannot use an annotation in a splice expression"），
-   但 `std::meta::constant_of(ann)` + 拼接等价可用；
-2. 含拼接的分支必须写 `if constexpr`：GCC 在模板实例化时会**急切下推所有分支里的拼接表达式**，
-   未命中分支里 `constant_of(空 info)` 会直接抛异常（即便该分支永不执行）；
-3. 拼接作模板实参需先经 `using X = [:...:]` 别名成类型（直接放 `foo<[:x:]>` 或加括号都不行）；
-4. `type_of(param) == ^^std::string` 这类比较需 `dealias`（`^^std::string` 是别名 info）；
-5. consteval 里 `std::vector<meta::info>` 不能直接下标拼接（内置断言非常量），先拷进 `std::array`；
-6. 参数名可经 `identifier_of(参数 info)` 取回（`from_query{}` 省略 key 的依据）。
+An action returns `asio::awaitable<T>` where `T` may be:
 
-## 更新业务（核心工作流）
+| `T` | Behavior |
+| --- | --- |
+| `fut::response` | passed through unchanged |
+| `std::string` | served directly as the response body (`text/plain`) |
+| glaze-serializable DTO | serialized to JSON automatically |
+| anything else | **compile error** (static_assert explains) |
 
-```bash
-cmake --build --preset sandbox --target fut_app_admin
-# 把 build/sandbox/bin/apps/fut_app_admin.dll 复制到部署目录覆盖旧的，重启服务
+## The server builder
+
+The host executable is a thin shell over `fut::exec::server_builder`; embedders use it directly:
+
+```cpp
+int main() {
+    return fut::exec::server_builder()
+        .config_file("config.json")   // JSON config; explicit values below override it
+        .host("0.0.0.0")
+        .port(8080)
+        .threads(4)
+        .apps_dir("apps")             // relative paths resolve against the executable
+        .request_timeout(std::chrono::seconds{30})
+        .log_level("debug")
+        .run();                       // blocks until SIGINT/SIGTERM
+}
 ```
 
-主程序与其它业务库完全不用重编译。
+The builder also registers a built-in `/api/core/status` table (service version, ABI, loaded apps)
+and sets up the logging chains described below.
 
-## 新增一个业务 app（例如 /api/pay）
+## Logging
 
-1. 复制 `apps/web` 为 `apps/pay`，改 `name()`、`prefix()`（`/api/pay`），业务函数加注解即可；
-2. 根 `CMakeLists.txt` 加一行 `add_subdirectory(apps/pay)`；
-3. 重新构建——exec 及其它 app 不受影响，服务器按前缀自动分发。
+Asynchronous, chain-based logging (`fut/log.hpp`, ported from HeliosView2): a call formats on the
+calling thread and queues a single shared record to every chain; each chain owns a worker thread,
+so a slow sink never blocks the caller.
 
-## ABI 约定（include/fut/）
+```cpp
+// server_builder sets these two chains up; embedders can add their own:
+fut::log::add_chain(fut::log::chain_options{
+    .minimum_level = fut::log::level::info,
+    .formatter = fut::log::pattern_formatter{"{T} [{L:<8}] {g:<12} {m}"},
+    .sink = fut::log::console_sink{.color = true},
+});
+fut::log::add_chain(fut::log::chain_options{
+    .minimum_level = fut::log::level::trace,
+    .formatter = fut::log::pattern_formatter{"{T} [{L:<8}] {g:<12} {s}: {m}"},
+    .sink = fut::log::file_sink{.path = "logs/fut.log", .max_bytes = 2 << 20, .max_files = 3},
+});
 
-* 所有模块必须用**同一编译器、同一运行时**构建（本仓库 preset 已保证）；
-* `request` 中的 `string_view` 指向 exec 拥有的请求缓冲，仅在 `handle()` 执行期间有效；
-* `response` 由 app 构造、所有权移交 exec；app 抛异常会被 exec 捕获转成 500；
-* 接口不兼容修改时 **bump `fut::abi_version`**，`app_loader` 会拒绝加载 ABI 不符的旧 DLL；
-* app 动态库只需链接 `Boost::asio`（awaitable）+ `glaze`，无需链接 Beast。
+constexpr auto loader_log = fut::log::grp("loader");
+loader_log.info("app '{}' ({} route(s)) <- {}", name, count, path);
+```
 
-## 反射说明
+* Levels: `trace/debug/info/warning/error/critical/off`; names are read from the enum declaration
+  through std::meta reflection (`to_string` / `from_string`), so no name table exists to keep in
+  sync. The configured level string is parsed the same way — an unknown name logs a warning and
+  falls back to `info`.
+* Pattern fields: `{m}` message, `{t}/{T}` (date)time, `{l}/{L}` level, `{g}` group,
+  `{f}/{b}/{s}` file/base-file/location, `{u}` function, `{h}` thread; `json_formatter` emits
+  one object per line. File paths print relative to the project root (`FUT_PROJECT_ROOT` from CMake).
+* Sinks: colour console, rotating file (size + backup count), or an external `fut::log::sink`.
+* Call `fut::log::shutdown()` before main returns (the builder does); worker threads are never
+  joined during static destruction.
+* Configure with `"log_level": "debug"` in config.json or `--log-level debug`.
 
-★ **反射是硬性要求**：全项目不存在"无反射降级"路径；编译器不支持（非 GCC 15+ 或未开 -freflection）时，
-CMake configure 直接 `FATAL_ERROR`，预处理层面 `#error` 兜底。
+## Deploying a business update
 
-* **注解路由反射**：`members_of` 枚举成员函数 + `annotations_of_with_type` 过滤四种动词注解 ->
-  `constant_of` 取路径 -> `[:nth_route<T>(I):]` 拼接调用；`parameters_of` + 形参注解完成参数绑定。
-* **std::meta 成员枚举**（P2996）：工具见 `include/fut/reflect.hpp`（`member_count_v`、`member_names_v`、
-  `for_each_member`），HTTP 演示见 `GET /api/admin/meta`。
-* **glaze**：对聚合 DTO 做编译期反射自动 JSON 序列化（`fut::json(dto)` / `fut::parse<T>(body)`）。
+```bash
+cmake --build --preset release --target fut_app_admin
+# copy build/release/bin/apps/fut_app_admin.dll over the deployed one, restart the service
+```
 
-## 配置 config.json
+Neither the server executable nor the other app DLLs are rebuilt.
 
-| 字段 | 默认 | 说明 |
+## ABI contract (`include/fut/`)
+
+* All modules must be built with the **same compiler and runtime** (the CMake presets guarantee it).
+* A DLL exports `fut_abi_version()` and `fut_app_table()` (see `FUT_EXPORT_APP`); the server
+  refuses to load DLLs whose ABI version differs from its own.
+* `request` string_views point into server-owned buffers and stay valid for the handler call only.
+* `response` ownership moves to the server; exceptions escaping an action become 500 responses.
+* Bump `fut::abi_version` whenever `fut/route.hpp` changes incompatibly.
+
+## Reflection notes
+
+* **Annotation routing**: `std::meta::info` is a structural type, so route generators are
+  templates parameterized on the action's reflection; `annotations_of_with_type` filters the
+  verbs, `parameters_of` drives binding, and `[:F:]` splices the call site.
+* **Annotation values** are read through `std::meta::constant_of` (GCC 16.2 does not yet accept
+  direct `[:annotation:]` splices).
+* **Member enumeration** utilities for DTO introspection: `include/fut/reflect.hpp`
+  (`member_count_v`, `member_names_v`, `for_each_member`); HTTP demo at `GET /api/admin/meta`.
+* **glaze** serializes aggregates via compile-time reflection — no field lists to maintain.
+
+GCC 16.2 quirks the implementation works around (see `fut/refl_router.hpp`):
+
+1. splice-bearing branches must be `if constexpr` — GCC eagerly lowers splice expressions of all
+   branches at instantiation, so an untaken branch would hit `constant_of(empty info)` and throw
+   even though it never runs;
+2. a splice used as a template argument must go through a `using` alias first;
+3. type comparisons need `std::meta::dealias` (`^^std::string` reflects an alias);
+4. consteval query vectors cannot be spliced by subscript (a library assert is not constexpr) —
+   copy into `std::array` first;
+5. parameter names survive for `std::meta::identifier_of`, enabling the empty-key sugar.
+
+## Project layout
+
+```
+fut/
+├── CMakeLists.txt / CMakePresets.json / vcpkg.json
+├── include/fut/            public library surface (shared by server and app DLLs)
+│   ├── route.hpp           request/response, path matching, route_record, app_table, ABI version
+│   ├── refl_router.hpp     annotation router + FUT_EXPORT_APP
+│   ├── annotate.hpp        annotation types (verbs + parameter bindings)
+│   ├── log.hpp             asynchronous logging (chains, sinks, reflection-based level names)
+│   ├── reflect.hpp        std::meta member utilities
+│   ├── json.hpp / url.hpp  glaze helpers / query parsing
+│   └── detail/             log format/path helpers
+├── src/exec/               server executable: builder, server, router, app_loader, config, log, main
+├── apps/admin | apps/web   sample apps (free-function actions)
+└── tests/                  doctest suite (20 cases)
+```
+
+## Configuration (config.json)
+
+| Field | Default | Meaning |
 | --- | --- | --- |
-| host | 127.0.0.1 | 监听地址 |
-| port | 8080 | 监听端口 |
-| threads | 2 | io_context 线程数（含主线程） |
-| apps_dir | apps | 业务 DLL 目录；相对路径按 exe 所在目录解析 |
-| request_timeout_seconds | 30 | 单请求读超时 |
+| host | 127.0.0.1 | listen address |
+| port | 8080 | listen port |
+| threads | 2 | io_context threads (including the main thread) |
+| apps_dir | apps | app DLL directory; relative paths resolve against the executable |
+| request_timeout_seconds | 30 | per-request read timeout |
+| log_level | info | trace/debug/info/warning/error/critical/off (matched through reflection) |
 
-## 测试
+## Tests
 
 ```bash
-ctest --preset sandbox   # 16 个用例：路由匹配、std::meta 反射、注解路由（编译期路由表
-                         # + body/query/path/request 绑定 + DTO 自动序列化 + 400/404）、DLL 全链路
+ctest --preset release   # 20 cases: prefix routing, std::meta utilities, annotation router
+                         # (compile-time table, body/query/path/request bindings, string and DTO
+                         # returns, 400/404), logging (level names, file chain, level filter),
+                         # end-to-end DLL loading
 ```
 
-DLL 全链路用例会真实加载两个业务 DLL（已是注解路由实现），驱动协程调用 `handle()`，并用 glaze 校验返回 JSON。
-
-> ctest 在 GBK 控制台显示中文用例名可能乱码，纯显示问题。
+The end-to-end suite loads the real app DLLs through the loader and drives their exported tables.

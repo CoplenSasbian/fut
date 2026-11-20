@@ -7,6 +7,7 @@ add_executable(fut_server
     router.cpp
     app_loader.cpp
     config.cpp
+    log.cpp
 )
 
 target_include_directories(fut_server PRIVATE

@@ -15,9 +15,10 @@ int main(int argc, char** argv) {
         else if (a == "--port" && i + 1 < argc)
             builder.port(static_cast<unsigned short>(std::atoi(argv[++i])));
         else if (a == "--threads" && i + 1 < argc) builder.threads(std::atoi(argv[++i]));
+        else if (a == "--log-level" && i + 1 < argc) builder.log_level(argv[++i]);
         else {
-            std::fprintf(stderr,
-                         "usage: fut_server [-c config.json] [--apps-dir DIR] [--port N] [--threads N]\n");
+            std::fputs("usage: fut_server [-c config.json] [--apps-dir DIR]"
+                       " [--port N] [--threads N] [--log-level LEVEL]\n", stderr);
             return 0;
         }
     }

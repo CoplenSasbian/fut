@@ -6,6 +6,12 @@ if(NOT COMMAND doctest_discover_tests)
     include("${doctest_DIR}/doctest.cmake")
 endif()
 
+# Logging: reflection-based level names, chains, sinks
+add_executable(test_log test_log.cpp ${PROJECT_SOURCE_DIR}/src/exec/log.cpp)
+target_include_directories(test_log PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(test_log PRIVATE doctest::doctest glaze::glaze)
+doctest_discover_tests(test_log)
+
 # Prefix routing (pure logic)
 add_executable(test_router test_router.cpp ${PROJECT_SOURCE_DIR}/src/exec/router.cpp)
 target_include_directories(test_router PRIVATE
@@ -31,7 +37,8 @@ endif()
 doctest_discover_tests(test_reflect_router)
 
 # End-to-end: app_loader loads fut_app_admin / fut_app_web and drives their tables
-add_executable(test_apps test_apps.cpp ${PROJECT_SOURCE_DIR}/src/exec/app_loader.cpp)
+add_executable(test_apps test_apps.cpp ${PROJECT_SOURCE_DIR}/src/exec/app_loader.cpp
+                              ${PROJECT_SOURCE_DIR}/src/exec/log.cpp)
 target_include_directories(test_apps PRIVATE
     ${PROJECT_SOURCE_DIR}/include
     ${PROJECT_SOURCE_DIR}/src/exec

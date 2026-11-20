@@ -2,9 +2,10 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstdio>
 #include <stdexcept>
 #include <system_error>
+
+#include <fut/log.hpp>
 
 #if defined(_WIN32)
 #  include <windows.h>
@@ -42,6 +43,8 @@ void dll_close(void* h) {
 using abi_version_fn = std::uint32_t (*)();
 using table_fn = const fut::app_table* (*)();
 
+constexpr auto loader_log = fut::log::grp("loader");
+
 } // namespace
 
 std::vector<app_loader::entry> app_loader::load_dir(const std::filesystem::path& dir) {
@@ -63,7 +66,7 @@ std::vector<app_loader::entry> app_loader::load_dir(const std::filesystem::path&
     for (const auto& p : files) {
         void* h = dll_open(p.string().c_str());
         if (!h) {
-            std::fprintf(stderr, "[app_loader] cannot load %s, skipped\n", p.string().c_str());
+            loader_log.warning("cannot load {}, skipped", p.string());
             continue;
         }
         auto ver = reinterpret_cast<abi_version_fn>(dll_sym(h, "fut_abi_version"));
@@ -74,8 +77,8 @@ std::vector<app_loader::entry> app_loader::load_dir(const std::filesystem::path&
         }
         const std::uint32_t dll_abi = (*ver)();
         if (dll_abi != fut::abi_version) {
-            std::fprintf(stderr, "[app_loader] %s ABI mismatch (dll=%u, server=%u), skipped\n",
-                         p.string().c_str(), (unsigned)dll_abi, (unsigned)fut::abi_version);
+            loader_log.warning("{} ABI mismatch (dll={}, server={}), skipped", p.string(),
+                               (unsigned)dll_abi, (unsigned)fut::abi_version);
             dll_close(h);
             continue;
         }
@@ -84,11 +87,9 @@ std::vector<app_loader::entry> app_loader::load_dir(const std::filesystem::path&
             dll_close(h);
             continue;
         }
-        std::fprintf(stdout, "[app_loader] app '%s' (prefix '%s', %u route(s)) <- %s\n",
-                     std::string(table->name).c_str(),
-                     std::string(table->prefix).c_str(),
-                     (unsigned)table->route_count,
-                     p.string().c_str());
+        loader_log.info("app '{}' (prefix '{}', {} route(s)) <- {}",
+                         std::string(table->name), std::string(table->prefix),
+                         (unsigned)table->route_count, p.string());
         out.push_back(entry{p, table, h});
         handles_.push_back(h);
     }

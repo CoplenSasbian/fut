@@ -21,6 +21,7 @@
 #include <string_view>
 #include <vector>
 
+#include <fut/log.hpp>
 #include <fut/route.hpp>
 
 namespace fut::exec {
@@ -33,6 +34,10 @@ public:
     server_builder& threads(int v) { threads_ = v; return *this; }
     server_builder& apps_dir(std::string_view v) { apps_dir_ = std::string(v); return *this; }
     server_builder& request_timeout(std::chrono::seconds v) { timeout_ = v; return *this; }
+
+    /// "trace" / "debug" / "info" / "warning" / "error" / "critical" / "off"
+    /// (matched against the enum through reflection); overrides config.json.
+    server_builder& log_level(std::string_view v) { log_level_ = std::string(v); return *this; }
 
     // Extra in-process tables (e.g. a built-in "core" app). Registered
     // without any DLL.
@@ -48,6 +53,7 @@ private:
     std::optional<int> threads_;
     std::optional<std::string> apps_dir_;
     std::optional<std::chrono::seconds> timeout_;
+    std::optional<std::string> log_level_;
     std::vector<const fut::app_table*> builtins_;
 };
 
