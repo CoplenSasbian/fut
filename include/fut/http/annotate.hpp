@@ -18,6 +18,7 @@
 
 #include <fut/http/invoke.hpp>
 #include <fut/http/route.hpp>
+#include <fut/scannable.hpp>
 
 namespace fut {
 

@@ -18,6 +18,8 @@
 
 #include <boost/asio/awaitable.hpp>
 
+#include <fut/scannable.hpp>
+
 namespace fut {
 
 inline constexpr std::uint32_t abi_version = 1;
@@ -63,19 +65,6 @@ struct text_buf {
 };
 
 } // namespace fut::detail
-
-// ---------------------------------------------------------------------------
-// scannable -- "the namespace scanner sees me and calls my operation()"
-//
-// ONLY annotations with namespace-level work derive from this. Today that
-// is fut::controller: the scanner finds controller-annotated CLASS TYPES,
-// passes the class's std::meta::info to controller::operation(), which
-// walks the class's member functions for http_action annotations.
-// ---------------------------------------------------------------------------
-
-struct scannable {};
-
-inline constexpr std::size_t max_entity_annotations = 8;
 
 // ---------------------------------------------------------------------------
 // request / response

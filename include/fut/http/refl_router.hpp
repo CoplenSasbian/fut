@@ -25,6 +25,7 @@
 #endif
 
 #include <fut/http/route.hpp>
+#include <fut/scannable.hpp>
 
 namespace fut::refl {
 
