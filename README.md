@@ -165,6 +165,14 @@ Two app layouts are supported, picked per source extension:
 header, plain definitions in `.cpp` files — reflection works on declarations, no definition has
 to be visible to the scanner; the generated unit's calls resolve through the linker.
 
+**Annotation placement is enforced.** The scan sees exactly what the listed headers declare, so
+route annotations have exactly one legal home:
+
+| Where the annotation sits | Result |
+| --- | --- |
+| on a declaration in a listed header | scanned — the canonical place |
+| only in a `.cpp` (on a definition) | **configure fails** (`add_app` greps listed `.cpp` files — a scan-blind annotation would otherwise be a silently missing route) |
+
 ```cpp
 // web_routes.hpp -- annotated declarations; the generated unit scans these
 namespace web {

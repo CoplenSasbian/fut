@@ -97,7 +97,21 @@ function(add_app name prefix)
     set(saw_header FALSE)
     foreach(src IN LISTS ARGN)
         if(src MATCHES "\.(cpp|cxx|cc)$")
-            # a definition unit: compiled normally, linked into the DLL
+            # A definition unit: compiled normally, linked into the DLL.
+            # Annotations must live on the declarations in the scanned
+            # headers -- an annotation hidden in a definition TU would be
+            # invisible to the scan (silent missing route), so refuse it
+            # at configure time instead.
+            file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${src}" cpp_content)
+            if(cpp_content MATCHES "=fut::http_")
+                message(FATAL_ERROR
+                    "add_app(${name}): ${src} contains route annotations"
+                    " ([[=fut::http_*]). The generated unit scans only the"
+                    " listed HEADERS, so an annotation in a .cpp is invisible"
+                    " to the scan and its route would be missing silently."
+                    " Put the annotated declaration in the app header"
+                    " instead; the definition stays here without attributes.")
+            endif()
         else()
             set(saw_header TRUE)
             string(APPEND gen_includes "#include <${src}>
