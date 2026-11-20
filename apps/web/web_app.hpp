@@ -79,14 +79,6 @@ inline asio::awaitable<std::string> note() {
     co_return "fut web app -- string actions are served as plain text";
 }
 
-// Nested namespace: found by the recursive scan -- group actions freely.
-namespace beta {
-
-[[=fut::http_get("/beta/note")]]
-inline asio::awaitable<std::string> beta_note() {
-    co_return "from namespace web::beta";
-}
-
-} // namespace beta
-
 } // namespace web
+// (the "beta" routes live in web_beta.hpp -- add_app unity-includes every
+// listed source, and the recursive scan finds them all)
