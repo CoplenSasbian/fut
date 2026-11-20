@@ -19,10 +19,13 @@ find_package(Boost CONFIG REQUIRED COMPONENTS asio beast)
 find_package(glaze CONFIG REQUIRED)
 find_package(doctest CONFIG REQUIRED)
 
-# ---- C++26 静态反射（std::meta / P2996）：GCC 15+ 需要 -freflection ----
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)
-    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-freflection>)
+# ---- C++26 静态反射（std::meta / P2996）为硬性要求 ----
+if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 15)
+    message(FATAL_ERROR
+        "fut 要求支持 C++26 std::meta 的编译器（GCC >= 15 且开启 -freflection）；"
+        "本项目工具链为 D:/mingw64 的 GCC 16.2")
 endif()
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-freflection>)
 
 # ---- 输出布局：build/bin/fut_server.exe + build/bin/apps/*.dll ----
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)

@@ -1,7 +1,8 @@
 #pragma once
 // fut/reflect.hpp —— C++26 静态反射（std::meta / P2996）工具。
 //
-// GCC 15+ 需要 -freflection 编译开关（根 CMakeLists 已为 GNU 自动添加）。
+// ★ 反射是硬性要求：不提供无反射的降级路径，编译器不支持直接编译失败。
+// GCC 15+ 需 -freflection（根 CMakeLists.txt 自动添加并做前置校验）。
 // 用法：
 //   fut::reflect::member_count_v<T>            成员数量
 //   fut::reflect::member_names_v<T>            std::array<std::string_view, N>
@@ -16,14 +17,10 @@
 #include <type_traits>
 #include <utility>
 
-#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 15
-#  define FUT_HAS_REFLECTION 1
-#  include <meta>
-#else
-#  define FUT_HAS_REFLECTION 0
+#if !defined(__GNUC__) || defined(__clang__) || __GNUC__ < 15
+#  error "fut requires C++26 std::meta reflection (GCC 15+ with -freflection)"
 #endif
-
-#if FUT_HAS_REFLECTION
+#include <meta>
 
 namespace fut::reflect {
 
@@ -67,5 +64,3 @@ constexpr void for_each_member(const T& value, F&& fn) {
 }
 
 } // namespace fut::reflect
-
-#endif // FUT_HAS_REFLECTION

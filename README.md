@@ -182,6 +182,9 @@ cmake --build --preset sandbox --target fut_app_admin
 
 ## 反射说明
 
+★ **反射是硬性要求**：全项目不存在"无反射降级"路径；编译器不支持（非 GCC 15+ 或未开 -freflection）时，
+CMake configure 直接 `FATAL_ERROR`，预处理层面 `#error` 兜底。
+
 * **注解路由反射**：`members_of` 枚举成员函数 + `annotations_of_with_type` 过滤四种动词注解 ->
   `constant_of` 取路径 -> `[:nth_route<T>(I):]` 拼接调用；`parameters_of` + 形参注解完成参数绑定。
 * **std::meta 成员枚举**（P2996）：工具见 `include/fut/reflect.hpp`（`member_count_v`、`member_names_v`、

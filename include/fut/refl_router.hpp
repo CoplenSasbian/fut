@@ -30,17 +30,11 @@
 #include <fut/json.hpp>
 #include <fut/url.hpp>
 
-#include <meta>
-
-#if !defined(FUT_HAS_REFLECTION)
-#  if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 15
-#    define FUT_HAS_REFLECTION 1
-#  else
-#    define FUT_HAS_REFLECTION 0
-#  endif
+// 反射为硬性要求：不支持 std::meta 的编译器直接编译失败
+#if !defined(__GNUC__) || defined(__clang__) || __GNUC__ < 15
+#  error "fut requires C++26 std::meta reflection (GCC 15+ with -freflection)"
 #endif
-static_assert(FUT_HAS_REFLECTION,
-              "fut/refl_router.hpp requires std::meta (GCC 15+ with -freflection)");
+#include <meta>
 
 namespace fut {
 

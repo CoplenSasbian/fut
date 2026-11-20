@@ -18,7 +18,6 @@ struct sample {
 } // namespace
 
 TEST_CASE("C++26 std::meta 静态反射") {
-#if FUT_HAS_REFLECTION
     CHECK(fut::reflect::member_count_v<sample> == 3);
 
     const auto names = fut::reflect::member_names_v<sample>;
@@ -39,7 +38,4 @@ TEST_CASE("C++26 std::meta 静态反射") {
     CHECK(seen[0] == "id");
     CHECK(seen[1] == "tag");
     CHECK(seen[2] == "vals");
-#else
-    MESSAGE("此编译器未启用 std::meta（-freflection），跳过反射用例");
-#endif
 }

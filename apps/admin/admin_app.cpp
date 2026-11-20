@@ -76,7 +76,6 @@ public:
 
     [[=fut::http_get("/meta")]]
     asio::awaitable<fut::response> meta() {
-#if FUT_HAS_REFLECTION
         struct member_row { std::string name; std::string value_kind; };
         struct meta_dto {
             std::vector<member_row> members;
@@ -97,9 +96,6 @@ public:
         for (std::string_view n : fut::reflect::member_names_v<demo_dto>)
             dto.names.emplace_back(n);
         co_return fut::json(dto);
-#else
-        co_return fut::error(501, "this compiler has no std::meta support");
-#endif
     }
 
     // 请求体自动绑定到 DTO

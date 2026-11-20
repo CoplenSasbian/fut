@@ -99,7 +99,6 @@ TEST_CASE("加载 fut_app_admin / fut_app_web") {
         struct member_row { std::string name{}; std::string value_kind{}; };
         struct meta_dto { std::vector<member_row> members{}; std::vector<std::string> names{}; };
         const auto res = run_handle(admin, make_req("GET", "/meta"));
-#if FUT_HAS_REFLECTION
         CHECK(res.status == 200);
         const auto v = fut::parse<meta_dto>(res.body);
         REQUIRE(v.has_value());
@@ -113,9 +112,6 @@ TEST_CASE("加载 fut_app_admin / fut_app_web") {
         CHECK(v->members[1].value_kind == "int");
         CHECK(v->members[2].value_kind == "bool");
         CHECK(v->members[3].value_kind == "string[]");
-#else
-        CHECK(res.status == 501);
-#endif
     }
 
     SUBCASE("web /hello?name=fut") {
