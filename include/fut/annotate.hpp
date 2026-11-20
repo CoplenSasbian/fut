@@ -2,19 +2,12 @@
 
 // fut/annotate.hpp -- C++26 annotation types.
 //
-// http_action{path, method} is the verb base; http_get etc. derive from it
-// and default the method enum. The controller annotation derives
-// fut::scannable: the namespace scanner finds controller-annotated CLASS
-// TYPES and calls controller::operation(class_info).
-//
-//     struct [[=fut::controller("/users")]] users_controller {
-//         [[=fut::http_get("/hits")]]       // -> GET  /users/hits
-//         asio::awaitable<hits_out> hits();
-//     };
-//
-// NOTE: verbs are STRUCTS (not constexpr functions) because GCC 16.2's
-// annotation system cannot resolve the type of a constexpr-function-call
-// annotation value; struct-derived annotations work correctly.
+// http_action{path, method} is the verb data; http_get etc. are constexpr
+// functions returning http_action values. GCC records the annotation type
+// as "const http_action" (cv-qualified), so detection compares against
+// ^^const http_action. The controller annotation derives fut::scannable:
+// the namespace scanner finds controller-annotated CLASS TYPES and calls
+// controller::operation(class_info).
 
 #include <array>
 #include <cstddef>
@@ -31,7 +24,8 @@ namespace fut {
 inline constexpr std::size_t annot_path_max = 128;
 
 // ---------------------------------------------------------------------------
-// http_action: the verb base. {path, method_enum}.
+// http_action: the verb data type. {path, method_enum}.
+// http_get("/ping") is a constexpr function returning http_action.
 // ---------------------------------------------------------------------------
 
 struct http_action {
@@ -42,29 +36,19 @@ struct http_action {
     constexpr http_action(std::string_view p, std::uint8_t m) : path(p), method_val(m) {}
 };
 
-struct http_get : http_action {
-    constexpr http_get() : http_action({}, static_cast<std::uint8_t>(method::GET)) {}
-    constexpr http_get(std::string_view p)
-        : http_action(p, static_cast<std::uint8_t>(method::GET)) {}
-};
-
-struct http_post : http_action {
-    constexpr http_post() : http_action({}, static_cast<std::uint8_t>(method::POST)) {}
-    constexpr http_post(std::string_view p)
-        : http_action(p, static_cast<std::uint8_t>(method::POST)) {}
-};
-
-struct http_put : http_action {
-    constexpr http_put() : http_action({}, static_cast<std::uint8_t>(method::PUT)) {}
-    constexpr http_put(std::string_view p)
-        : http_action(p, static_cast<std::uint8_t>(method::PUT)) {}
-};
-
-struct http_delete : http_action {
-    constexpr http_delete() : http_action({}, static_cast<std::uint8_t>(method::DEL)) {}
-    constexpr http_delete(std::string_view p)
-        : http_action(p, static_cast<std::uint8_t>(method::DEL)) {}
-};
+// constexpr factories (used as annotation values)
+constexpr http_action http_get(std::string_view path) {
+    return {path, static_cast<std::uint8_t>(method::GET)};
+}
+constexpr http_action http_post(std::string_view path) {
+    return {path, static_cast<std::uint8_t>(method::POST)};
+}
+constexpr http_action http_put(std::string_view path) {
+    return {path, static_cast<std::uint8_t>(method::PUT)};
+}
+constexpr http_action http_delete(std::string_view path) {
+    return {path, static_cast<std::uint8_t>(method::DEL)};
+}
 
 // ---------------------------------------------------------------------------
 // controller: the scannable annotation.
@@ -80,6 +64,8 @@ struct controller : scannable {
 };
 
 // ---- controller internals: walk class members for http_action annotations ----
+// GCC records constexpr-function annotation types as cv-qualified,
+// so detection compares against ^^const http_action.
 
 namespace ctrl {
 
@@ -95,29 +81,32 @@ consteval std::array<std::meta::info, max_members> copy_members() {
     return out;
 }
 
-// The http_action-derived annotation info of a member.
+// The http_action annotation of a member (copy-to-array, const comparison).
 template <std::size_t N, std::meta::info Member>
 consteval std::array<std::meta::info, N> copy_verb_anns() {
     std::array<std::meta::info, N> out{};
     std::size_t i = 0;
-    for (auto a : std::meta::annotations_of(Member))
-        if (i < N && std::meta::is_base_of_type(^^fut::http_action, std::meta::type_of(a)))
+    for (auto a : std::meta::annotations_of(Member)) {
+        // GCC records constexpr fn annotation type as "const http_action"
+        if (i < N && std::meta::type_of(a) == ^^const fut::http_action)
             out[i++] = a;
+    }
     return out;
 }
 
-// The controller annotation on the class.
+// The controller annotation on the class (struct annotation, no const issue).
 template <std::size_t N, std::meta::info Entity>
 consteval std::array<std::meta::info, N> copy_self_anns() {
     std::array<std::meta::info, N> out{};
     std::size_t i = 0;
-    for (auto a : std::meta::annotations_of(Entity))
+    for (auto a : std::meta::annotations_of(Entity)) {
         if (i < N && std::meta::is_base_of_type(^^fut::controller, std::meta::type_of(a)))
             out[i++] = a;
+    }
     return out;
 }
 
-// method enum -> HTTP method string (uppercase, standard form)
+// method enum -> HTTP string
 consteval std::string_view method_to_string(std::uint8_t val) {
     switch (static_cast<fut::method>(val)) {
     case fut::method::GET:    return "GET";
