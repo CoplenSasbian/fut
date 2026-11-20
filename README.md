@@ -112,8 +112,20 @@ asio::awaitable<sum_out> sum([[=fut::from_path("a")]] long long a,   // path pla
 FUT_EXPORT_APP("web", "/api/web", ^^ping, ^^calc, ^^sum)
 ```
 
-Add the app directory to the top-level `CMakeLists.txt` (`add_subdirectory(apps/pay)`), build,
-and the server picks it up by prefix on the next start.
+Wire it up with the `add_app()` helper (defined in `cmake/fut.cmake`, included by the
+top-level `CMakeLists.txt`):
+
+```cmake
+# apps/pay/CMakeLists.txt -- this one line is the whole build script:
+add_app(pay /api/pay pay_app.cpp)
+```
+
+`add_app(<name> <prefix> [sources...])` creates the `fut_app_<name>` MODULE target, places
+`fut_app_<name>.dll` into `bin/apps`, adds the include path and the standard link set
+(`Boost::asio`, `glaze::glaze`), defines `FUT_APP_NAME` / `FUT_APP_PREFIX` as quoted literals,
+and validates the prefix format at configure time (must start with '/', must not end with '/').
+Then reference the directory once from the top level (`add_subdirectory(apps/pay)`), build, and
+the server picks the DLL up by prefix on the next start.
 
 ### Parameter binding
 
@@ -241,6 +253,7 @@ GCC 16.2 quirks the implementation works around (see `fut/refl_router.hpp`):
 ```
 fut/
 ├── CMakeLists.txt / CMakePresets.json / vcpkg.json
+├── cmake/fut.cmake         the add_app(name, prefix, sources...) helper
 ├── include/fut/            public library surface (shared by server and app DLLs)
 │   ├── route.hpp           request/response, path matching, route_record, app_table, ABI version
 │   ├── refl_router.hpp     annotation router + FUT_EXPORT_APP

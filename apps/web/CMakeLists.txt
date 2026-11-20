@@ -1,12 +1,2 @@
 # /api/web -- business app DLL fut_app_web.dll (deploy updates by swapping this file)
-add_library(fut_app_web MODULE web_app.cpp)
-
-set_target_properties(fut_app_web PROPERTIES
-    PREFIX ""
-    OUTPUT_NAME "fut_app_web"
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/apps
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin/apps
-)
-
-target_include_directories(fut_app_web PRIVATE ${PROJECT_SOURCE_DIR}/include)
-target_link_libraries(fut_app_web PRIVATE Boost::asio glaze::glaze)
+add_app(web /api/web web_app.cpp)
