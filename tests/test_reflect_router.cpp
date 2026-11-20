@@ -66,6 +66,23 @@ asio::awaitable<std::string> mixed([[=fut::from_path("n")]] int n) {
 constexpr auto table = fut::refl::make_app_table<^^ping, ^^add, ^^greet, ^^mul, ^^raw,
                                                   ^^who, ^^txt, ^^mixed>("demo", "/api/demo");
 
+// ---- namespace-scanned table (recursion included) ----
+
+namespace scan_demo {
+
+[[=fut::http_get("/one")]]
+inline asio::awaitable<greet_out> scan_one() { co_return greet_out{"flat"}; }
+
+namespace nested {
+[[=fut::http_get("/two")]]
+inline asio::awaitable<greet_out> scan_two() { co_return greet_out{"nested"}; }
+} // namespace nested
+
+} // namespace scan_demo
+
+constexpr auto scanned =
+    fut::refl::make_scanned_table<^^scan_demo>("scan", "/api/scan");
+
 // Drives the table exactly the way the server does.
 asio::awaitable<fut::response> call_table(const fut::app_table& t, fut::request req) {
     for (const fut::route_record& r : t.entries()) {
@@ -86,19 +103,21 @@ struct run_result {
     std::exception_ptr err{};
 };
 
-asio::awaitable<void> drive(run_result& rr, fut::request req) {
-    rr.res = co_await call_table(table, std::move(req));
+asio::awaitable<void> drive(run_result& rr, const fut::app_table* t, fut::request req) {
+    rr.res = co_await call_table(*t, std::move(req));
 }
 
-fut::response run(fut::request req) {
+fut::response run(const fut::app_table& t, fut::request req) {
     asio::io_context ioc;
     run_result rr;
-    asio::co_spawn(ioc, drive(rr, std::move(req)),
+    asio::co_spawn(ioc, drive(rr, &t, std::move(req)),
                    [&rr](std::exception_ptr e) { rr.err = e; });
     ioc.run();
     if (rr.err) std::rethrow_exception(rr.err);
     return rr.res;
 }
+
+fut::response run(fut::request req) { return run(table, std::move(req)); }
 
 fut::request make_req(std::string_view method, std::string_view path,
                       std::string_view body = {}, std::string_view query = {}) {
@@ -204,6 +223,22 @@ TEST_CASE("GET /mix/9 -- string return combined with path binding") {
 TEST_CASE("no match -> 404 (including method mismatch)") {
     CHECK(run(make_req("GET", "/nope")).status == 404);
     CHECK(run(make_req("POST", "/ping")).status == 404);
+}
+
+TEST_CASE("namespace scan discovers flat and nested actions") {
+    REQUIRE(scanned.route_count == 2);
+    CHECK(scanned.entries()[0].pattern == "/one");
+    CHECK(scanned.entries()[1].pattern == "/two");
+
+    const auto res1 = run(scanned, make_req("GET", "/one"));
+    const auto v1 = fut::parse<greet_out>(res1.body);
+    REQUIRE(v1.has_value());
+    CHECK(v1->hi == "flat");
+
+    const auto res2 = run(scanned, make_req("GET", "/two"));
+    const auto v2 = fut::parse<greet_out>(res2.body);
+    REQUIRE(v2.has_value());
+    CHECK(v2->hi == "nested");
 }
 
 } // TEST_SUITE

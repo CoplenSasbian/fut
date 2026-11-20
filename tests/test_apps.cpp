@@ -85,7 +85,7 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their tables") {
     CHECK(admin->prefix == "/api/admin");
     CHECK(web->prefix == "/api/web");
     CHECK(admin->route_count == 6);
-    CHECK(web->route_count == 6);
+    CHECK(web->route_count == 7);   // 6 flat actions + 1 inside namespace web::beta
 
     SUBCASE("admin /ping") {
         struct pong { bool pong{}; std::string app{}; };
@@ -185,6 +185,13 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their tables") {
         CHECK(res.status == 200);
         CHECK(res.content_type.rfind("text/plain", 0) == 0);
         CHECK(res.body.find("fut web app") == 0);
+    }
+
+    SUBCASE("web /beta/note -- action in a nested namespace") {
+        const auto res = run(*web, make_req("GET", "/beta/note"));
+        CHECK(res.status == 200);
+        CHECK(res.content_type.rfind("text/plain", 0) == 0);
+        CHECK(res.body == "from namespace web::beta");
     }
 
     SUBCASE("unknown route -> 404") {

@@ -287,36 +287,52 @@ constexpr ::fut::app_table make_app_table(std::string_view name, std::string_vie
 // ---------------------------------------------------------------------------
 // namespace-scanned tables
 //
-// Actions placed in a namespace are discovered automatically: every function
-// of the namespace carrying one of the verb annotations is collected, so an
-// app needs no action list at all. GCC 16.2 supports members_of() over
-// namespaces, which is what makes this work.
+// Actions live in the namespace named after the app; every function carrying
+// one of the verb annotations is discovered automatically -- and the scan is
+// recursive, so nested namespaces are descended into and an app can group its
+// actions freely. GCC 16.2 supports members_of() over namespaces (including
+// nested ones as members), which is what makes this work.
 //
-//     namespace fut_actions {
+//     namespace admin {
 //         [[=fut::http_get("/ping")]] asio::awaitable<pong_dto> ping() { ... }
-//         [[=fut::http_post("/echo")]] asio::awaitable<out> echo(...) { ... }
+//         namespace reports {
+//             [[=fut::http_post("/echo")]] asio::awaitable<out> echo(...) { ... }
+//         }
 //     }
-//     FUT_EXPORT_APP_NS("admin", "/api/admin", ^^fut_actions)
+//     FUT_EXPORT_APP_NS("admin", "/api/admin", ^^admin)
 // ---------------------------------------------------------------------------
 
-template <meta::info Ns>
-consteval std::size_t ns_route_count() {
+// Recursive scan: an app's actions live in the namespace named after the app
+// (the add_app() name argument); nested namespaces are descended into, so
+// an app can group its actions (e.g. namespace admin { namespace reports { ... } }).
+consteval std::size_t ns_scan_count(meta::info ns) {
     std::size_t n = 0;
-    for (auto m : meta::members_of(Ns, meta::access_context::unchecked()))
+    for (auto m : meta::members_of(ns, meta::access_context::unchecked())) {
         if (is_route_function(m)) ++n;
+        else if (meta::is_namespace(m)) n += ns_scan_count(m);
+    }
     return n;
 }
 
-template <meta::info Ns>
-consteval meta::info ns_nth_route(std::size_t idx) {
-    std::size_t seen = 0;
-    for (auto m : meta::members_of(Ns, meta::access_context::unchecked())) {
-        if (!is_route_function(m)) continue;
-        if (seen == idx) return m;
-        ++seen;
+consteval meta::info ns_scan_nth(meta::info ns, std::size_t idx) {
+    for (auto m : meta::members_of(ns, meta::access_context::unchecked())) {
+        if (is_route_function(m)) {
+            if (idx == 0) return m;
+            --idx;
+        } else if (meta::is_namespace(m)) {
+            const std::size_t sub = ns_scan_count(m);
+            if (idx < sub) return ns_scan_nth(m, idx);
+            idx -= sub;
+        }
     }
     return meta::info{};
 }
+
+template <meta::info Ns>
+consteval std::size_t ns_route_count() { return ns_scan_count(Ns); }
+
+template <meta::info Ns>
+consteval meta::info ns_nth_route(std::size_t idx) { return ns_scan_nth(Ns, idx); }
 
 template <meta::info Ns, std::size_t... I>
 constexpr std::array<::fut::route_record, sizeof...(I)> ns_records_impl(
@@ -364,10 +380,11 @@ constexpr ::fut::app_table make_scanned_table(std::string_view name, std::string
 
 // ---------------------------------------------------------------------------
 // DLL export helper without any action list: NS is the reflection of the
-// namespace holding the actions (e.g. ^^fut_actions); every annotated
-// function found there is exported. This is what add_app()'s generated
+// namespace holding the actions -- conventionally the namespace named after
+// the app, e.g. ^^admin; the scan descends into nested namespaces. Every
+// annotated function found is exported. This is what add_app()'s generated
 // unit uses.
-//     FUT_EXPORT_APP_NS("admin", "/api/admin", ^^fut_actions)
+//     FUT_EXPORT_APP_NS("admin", "/api/admin", ^^admin)
 // ---------------------------------------------------------------------------
 
 #define FUT_EXPORT_APP_NS(NAME, PREFIX, NS)                                        \

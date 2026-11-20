@@ -1,9 +1,9 @@
 #pragma once
 
 // /api/web -- sample front-end-facing app.
-// Free-function actions inside namespace fut_actions; the CMake-generated
-// export unit scans the namespace with std::meta reflection, so a new
-// annotated function becomes a route with no list to maintain.
+// Free-function actions inside namespace web (the namespace named after the
+// app). The CMake-generated export unit scans it with std::meta reflection,
+// recursively: namespace web::beta below demonstrates nested groups.
 
 #include <chrono>
 #include <string>
@@ -37,7 +37,7 @@ struct sum_out {
 
 // ---- actions: scanned by the CMake-generated export unit ----
 
-namespace fut_actions {
+namespace web {
 
 [[=fut::http_get("/ping")]]
 inline asio::awaitable<pong_dto> ping() { co_return pong_dto{}; }
@@ -79,4 +79,14 @@ inline asio::awaitable<std::string> note() {
     co_return "fut web app -- string actions are served as plain text";
 }
 
-} // namespace fut_actions
+// Nested namespace: found by the recursive scan -- group actions freely.
+namespace beta {
+
+[[=fut::http_get("/beta/note")]]
+inline asio::awaitable<std::string> beta_note() {
+    co_return "from namespace web::beta";
+}
+
+} // namespace beta
+
+} // namespace web
