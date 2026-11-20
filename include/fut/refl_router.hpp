@@ -284,6 +284,64 @@ constexpr ::fut::app_table make_app_table(std::string_view name, std::string_vie
     return ::fut::app_table{name, prefix, records_v<Fs...>.data(), sizeof...(Fs)};
 }
 
+// ---------------------------------------------------------------------------
+// namespace-scanned tables
+//
+// Actions placed in a namespace are discovered automatically: every function
+// of the namespace carrying one of the verb annotations is collected, so an
+// app needs no action list at all. GCC 16.2 supports members_of() over
+// namespaces, which is what makes this work.
+//
+//     namespace fut_actions {
+//         [[=fut::http_get("/ping")]] asio::awaitable<pong_dto> ping() { ... }
+//         [[=fut::http_post("/echo")]] asio::awaitable<out> echo(...) { ... }
+//     }
+//     FUT_EXPORT_APP_NS("admin", "/api/admin", ^^fut_actions)
+// ---------------------------------------------------------------------------
+
+template <meta::info Ns>
+consteval std::size_t ns_route_count() {
+    std::size_t n = 0;
+    for (auto m : meta::members_of(Ns, meta::access_context::unchecked()))
+        if (is_route_function(m)) ++n;
+    return n;
+}
+
+template <meta::info Ns>
+consteval meta::info ns_nth_route(std::size_t idx) {
+    std::size_t seen = 0;
+    for (auto m : meta::members_of(Ns, meta::access_context::unchecked())) {
+        if (!is_route_function(m)) continue;
+        if (seen == idx) return m;
+        ++seen;
+    }
+    return meta::info{};
+}
+
+template <meta::info Ns, std::size_t... I>
+constexpr std::array<::fut::route_record, sizeof...(I)> ns_records_impl(
+    std::index_sequence<I...>) {
+    std::array<::fut::route_record, sizeof...(I)> out{};
+    ((out[I] = ::fut::route_record{
+         route_method<ns_nth_route<Ns>(I)>(),
+         route_pattern<ns_nth_route<Ns>(I)>(),
+         &invoke_route<ns_nth_route<Ns>(I)>}),
+     ...);
+    return out;
+}
+
+template <meta::info Ns>
+constexpr auto ns_records_v =
+    ns_records_impl<Ns>(std::make_index_sequence<ns_route_count<Ns>()>{});
+
+// constexpr auto t = fut::refl::make_scanned_table<^^fut_actions>("admin", "/api/admin");
+template <meta::info Ns>
+constexpr ::fut::app_table make_scanned_table(std::string_view name, std::string_view prefix) {
+    static_assert(ns_route_count<Ns>() > 0,
+                  "fut: no [[=fut::http_*]] annotated actions were found in the namespace");
+    return ::fut::app_table{name, prefix, ns_records_v<Ns>.data(), ns_route_count<Ns>()};
+}
+
 } // namespace fut::refl
 
 // ---------------------------------------------------------------------------
@@ -296,6 +354,26 @@ constexpr ::fut::app_table make_app_table(std::string_view name, std::string_vie
     namespace {                                                                    \
     constexpr auto fut_app_table_v =                                               \
         ::fut::refl::make_app_table<__VA_ARGS__>((NAME), (PREFIX));                 \
+    }                                                                              \
+    extern "C" {                                                                    \
+    FUT_EXPORT std::uint32_t fut_abi_version() { return ::fut::abi_version; }      \
+    FUT_EXPORT const ::fut::app_table* fut_app_table() {                          \
+        return &fut_app_table_v;                                                    \
+    }                                                                              \
+    }
+
+// ---------------------------------------------------------------------------
+// DLL export helper without any action list: NS is the reflection of the
+// namespace holding the actions (e.g. ^^fut_actions); every annotated
+// function found there is exported. This is what add_app()'s generated
+// unit uses.
+//     FUT_EXPORT_APP_NS("admin", "/api/admin", ^^fut_actions)
+// ---------------------------------------------------------------------------
+
+#define FUT_EXPORT_APP_NS(NAME, PREFIX, NS)                                        \
+    namespace {                                                                    \
+    constexpr auto fut_app_table_v =                                               \
+        ::fut::refl::make_scanned_table<(NS)>((NAME), (PREFIX));                   \
     }                                                                              \
     extern "C" {                                                                    \
     FUT_EXPORT std::uint32_t fut_abi_version() { return ::fut::abi_version; }      \
