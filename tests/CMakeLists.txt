@@ -20,6 +20,15 @@ target_include_directories(test_reflect PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(test_reflect PRIVATE doctest::doctest)
 doctest_discover_tests(test_reflect)
 
+# C++26 注解路由：编译期路由表 + 参数绑定全链路
+add_executable(test_reflect_router test_reflect_router.cpp)
+target_include_directories(test_reflect_router PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(test_reflect_router PRIVATE doctest::doctest Boost::asio glaze::glaze)
+if(WIN32)
+    target_link_libraries(test_reflect_router PRIVATE ws2_32)
+endif()
+doctest_discover_tests(test_reflect_router)
+
 # 全链路：app_loader 加载 fut_app_admin / fut_app_web DLL，驱动协程调用 handle
 add_executable(test_apps test_apps.cpp ${PROJECT_SOURCE_DIR}/src/exec/app_loader.cpp)
 target_include_directories(test_apps PRIVATE
