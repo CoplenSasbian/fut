@@ -8,6 +8,7 @@
 
 #include <boost/asio.hpp>
 
+#include <fut/app.hpp>
 #include <fut/http/http.hpp>
 #include <fut/json.hpp>
 

@@ -18,16 +18,9 @@
 #include <utility>
 #include <vector>
 
+#include <fut/export.hpp>
+
 namespace fut {
-
-inline constexpr std::uint32_t abi_version = 1;
-inline constexpr const char* library_version = "0.3.0";
-
-#if defined(_WIN32)
-#  define FUT_EXPORT __declspec(dllexport)
-#else
-#  define FUT_EXPORT __attribute__((visibility("default")))
-#endif
 
 // ---------------------------------------------------------------------------
 // method -- the HTTP verb

@@ -9,6 +9,7 @@
 #include <utility>
 
 #include <fut/ctx.hpp>
+#include <fut/export.hpp>
 #include <fut/log.hpp>
 
 #if defined(_WIN32)
