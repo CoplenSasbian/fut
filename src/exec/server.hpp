@@ -1,5 +1,7 @@
 #pragma once
 
+// TCP listener: spawns one session coroutine per connection.
+
 #include <chrono>
 #include <string>
 
@@ -10,7 +12,6 @@
 
 namespace fut::exec {
 
-// TCP 监听器：每个连接 co_spawn 一个会话协程
 class server {
 public:
     server(boost::asio::io_context& ioc, std::string host, unsigned short port,

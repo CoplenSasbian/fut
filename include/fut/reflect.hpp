@@ -1,15 +1,19 @@
 #pragma once
-// fut/reflect.hpp —— C++26 静态反射（std::meta / P2996）工具。
+// fut/reflect.hpp -- C++26 static reflection utilities (std::meta / P2996).
 //
-// ★ 反射是硬性要求：不提供无反射的降级路径，编译器不支持直接编译失败。
-// GCC 15+ 需 -freflection（根 CMakeLists.txt 自动添加并做前置校验）。
-// 用法：
-//   fut::reflect::member_count_v<T>            成员数量
-//   fut::reflect::member_names_v<T>            std::array<std::string_view, N>
-//   fut::reflect::for_each_member(obj, f)      f(name, const成员引用) 逐成员回调
+// Reflection is a HARD REQUIREMENT of this library: there is no
+// reflection-free fallback path. Compilers without std::meta fail to compile.
+// GCC 15+ needs -freflection (added automatically by the top-level
+// CMakeLists.txt, which also validates the toolchain up front).
 //
-// 注意：std::meta 的查询结果（std::vector<meta::info>）只能活在常量求值内，
-// 所以这里统一用 consteval 函数 + constexpr 变量模板把结果固化下来。
+// Usage:
+//   fut::reflect::member_count_v<T>       number of non-static data members
+//   fut::reflect::member_names_v<T>        std::array<std::string_view, N>
+//   fut::reflect::for_each_member(obj, f) f(name, const member&) per member
+//
+// Note: std::meta query results (std::vector<meta::info>) only live within
+// constant evaluation, so results are pinned down through consteval
+// functions + constexpr variable templates.
 
 #include <array>
 #include <cstddef>
@@ -17,6 +21,7 @@
 #include <type_traits>
 #include <utility>
 
+// Reflection is a hard requirement: no reflection-free fallback.
 #if !defined(__GNUC__) || defined(__clang__) || __GNUC__ < 15
 #  error "fut requires C++26 std::meta reflection (GCC 15+ with -freflection)"
 #endif
@@ -55,7 +60,7 @@ inline constexpr auto member_names_v = [] {
     return names;
 }();
 
-// 逐成员回调：fn(std::string_view name, const 成员引用)
+// Calls fn(std::string_view name, const member&) for every data member.
 template <class T, class F>
 constexpr void for_each_member(const T& value, F&& fn) {
     [&]<std::size_t... I>(std::index_sequence<I...>) {

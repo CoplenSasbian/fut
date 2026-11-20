@@ -11,8 +11,8 @@ router::match router::route(std::string_view target) const {
 
     match best;
     std::size_t best_len = 0;
-    for (fut::app* a : apps_) {
-        const std::string_view prefix = a->prefix();
+    for (const fut::app_table* t : apps_) {
+        const std::string_view prefix = t->prefix;
         if (prefix.empty() || prefix.front() != '/') continue;
 
         const bool exact = (path == prefix);
@@ -20,9 +20,9 @@ router::match router::route(std::string_view target) const {
                             && path.compare(0, prefix.size(), prefix) == 0
                             && path[prefix.size()] == '/';
         if (!exact && !deeper) continue;
-        if (prefix.size() < best_len) continue; // 保留更长（更精确）的 prefix
+        if (prefix.size() < best_len) continue;  // keep the longest (most specific) prefix
 
-        best.app = a;
+        best.app = t;
         best_len = prefix.size();
         best.query = query;
         best.rel_path = exact ? std::string_view{"/"} : path.substr(prefix.size());

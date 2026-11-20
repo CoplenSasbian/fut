@@ -1,4 +1,4 @@
-# /api/web —— 业务动态库 fut_app_web.dll（更新业务只需替换此文件）
+# /api/web -- business app DLL fut_app_web.dll (deploy updates by swapping this file)
 add_library(fut_app_web MODULE web_app.cpp)
 
 set_target_properties(fut_app_web PROPERTIES

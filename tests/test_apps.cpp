@@ -3,13 +3,13 @@
 
 #include <cstdlib>
 #include <exception>
-#include <iostream>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include <boost/asio.hpp>
 #include <fut/json.hpp>
-#include <fut/reflect.hpp>
+#include <fut/route.hpp>
 
 #include "app_loader.hpp"
 
@@ -17,19 +17,34 @@ namespace asio = boost::asio;
 
 namespace {
 
+// Dispatches a request against a loaded app table exactly like the server.
+asio::awaitable<fut::response> call_table(const fut::app_table& t, fut::request req) {
+    for (const fut::route_record& r : t.entries()) {
+        if (r.method != req.method) continue;
+        fut::path_match pm;
+        if (!fut::match_pattern(r.pattern, req.path, pm)) continue;
+        try {
+            co_return co_await r.invoke(req, pm);
+        } catch (const fut::bind_error& e) {
+            co_return fut::error(400, e.what());
+        }
+    }
+    co_return fut::error(404, "no route");
+}
+
 struct run_result {
     fut::response res{};
     std::exception_ptr err{};
 };
 
-asio::awaitable<void> drive(run_result& rr, fut::app* a, fut::request req) {
-    rr.res = co_await a->handle(req);
+asio::awaitable<void> drive(run_result& rr, const fut::app_table* t, fut::request req) {
+    rr.res = co_await call_table(*t, std::move(req));
 }
 
-fut::response run_handle(fut::app* a, fut::request req) {
+fut::response run(const fut::app_table& t, fut::request req) {
     asio::io_context ioc;
     run_result rr;
-    asio::co_spawn(ioc, drive(rr, a, std::move(req)),
+    asio::co_spawn(ioc, drive(rr, &t, std::move(req)),
                    [&rr](std::exception_ptr e) { rr.err = e; });
     ioc.run();
     if (rr.err) std::rethrow_exception(rr.err);
@@ -37,20 +52,21 @@ fut::response run_handle(fut::app* a, fut::request req) {
 }
 
 fut::request make_req(std::string_view method, std::string_view path,
-                      std::string_view body = {}) {
+                      std::string_view body = {}, std::string_view query = {}) {
     fut::request r;
     r.method = method;
     r.target = path;
     r.path = path;
     r.body = body;
+    r.query = query;
     return r;
 }
 
 } // namespace
 
-TEST_SUITE("业务动态库全链路") {
+TEST_SUITE("app DLL end-to-end") {
 
-TEST_CASE("加载 fut_app_admin / fut_app_web") {
+TEST_CASE("load fut_app_admin / fut_app_web and drive their tables") {
     const char* dir = std::getenv("FUT_APPS_DIR");
     REQUIRE(dir != nullptr);
 
@@ -58,20 +74,22 @@ TEST_CASE("加载 fut_app_admin / fut_app_web") {
     const auto apps = loader.load_dir(dir);
     REQUIRE(apps.size() == 2);
 
-    fut::app* admin = nullptr;
-    fut::app* web = nullptr;
+    const fut::app_table* admin = nullptr;
+    const fut::app_table* web = nullptr;
     for (const auto& e : apps) {
-        if (e.instance->name() == "admin") admin = e.instance;
-        if (e.instance->name() == "web") web = e.instance;
+        if (e.table->name == "admin") admin = e.table;
+        if (e.table->name == "web") web = e.table;
     }
     REQUIRE(admin != nullptr);
     REQUIRE(web != nullptr);
-    CHECK(admin->prefix() == "/api/admin");
-    CHECK(web->prefix() == "/api/web");
+    CHECK(admin->prefix == "/api/admin");
+    CHECK(web->prefix == "/api/web");
+    CHECK(admin->route_count == 6);
+    CHECK(web->route_count == 6);
 
     SUBCASE("admin /ping") {
         struct pong { bool pong{}; std::string app{}; };
-        const auto res = run_handle(admin, make_req("GET", "/ping"));
+        const auto res = run(*admin, make_req("GET", "/ping"));
         CHECK(res.status == 200);
         const auto v = fut::parse<pong>(res.body);
         REQUIRE(v.has_value());
@@ -79,9 +97,9 @@ TEST_CASE("加载 fut_app_admin / fut_app_web") {
         CHECK(v->app == "admin");
     }
 
-    SUBCASE("admin /echo JSON 往返") {
+    SUBCASE("admin /echo -- body roundtrip") {
         struct echo_out { std::string message{}; int doubled{}; long long sum{}; };
-        const auto res = run_handle(admin, make_req("POST", "/echo", R"({"message":"hi","count":4})"));
+        const auto res = run(*admin, make_req("POST", "/echo", R"({"message":"hi","count":4})"));
         CHECK(res.status == 200);
         const auto v = fut::parse<echo_out>(res.body);
         REQUIRE(v.has_value());
@@ -90,15 +108,14 @@ TEST_CASE("加载 fut_app_admin / fut_app_web") {
         CHECK(v->sum == 10);
     }
 
-    SUBCASE("admin /echo 非法 JSON -> 400") {
-        const auto res = run_handle(admin, make_req("POST", "/echo", "not-json"));
-        CHECK(res.status == 400);
+    SUBCASE("admin /echo -- invalid JSON -> 400") {
+        CHECK(run(*admin, make_req("POST", "/echo", "not-json")).status == 400);
     }
 
-    SUBCASE("admin /meta C++26 反射") {
+    SUBCASE("admin /meta -- C++26 std::meta member enumeration") {
         struct member_row { std::string name{}; std::string value_kind{}; };
         struct meta_dto { std::vector<member_row> members{}; std::vector<std::string> names{}; };
-        const auto res = run_handle(admin, make_req("GET", "/meta"));
+        const auto res = run(*admin, make_req("GET", "/meta"));
         CHECK(res.status == 200);
         const auto v = fut::parse<meta_dto>(res.body);
         REQUIRE(v.has_value());
@@ -114,20 +131,35 @@ TEST_CASE("加载 fut_app_admin / fut_app_web") {
         CHECK(v->members[3].value_kind == "string[]");
     }
 
-    SUBCASE("web /hello?name=fut") {
+    SUBCASE("admin /whoami -- DTO return auto-serialization") {
+        struct who { std::string app{}; std::string user{}; };
+        const auto res = run(*admin, make_req("GET", "/whoami"));
+        CHECK(res.status == 200);
+        const auto v = fut::parse<who>(res.body);
+        REQUIRE(v.has_value());
+        CHECK(v->app == "admin");
+        CHECK(v->user == "root");
+    }
+
+    SUBCASE("admin /raw -- string action served as text/plain") {
+        const auto res = run(*admin, make_req("GET", "/raw"));
+        CHECK(res.status == 200);
+        CHECK(res.content_type.rfind("text/plain", 0) == 0);
+        CHECK(res.body.find("fut admin app") == 0);
+    }
+
+    SUBCASE("web /hello?name=fut -- query binding") {
         struct hello { std::string hello{}; };
-        fut::request req = make_req("GET", "/hello");
-        req.query = "name=fut";
-        const auto res = run_handle(web, req);
+        const auto res = run(*web, make_req("GET", "/hello", "", "name=fut"));
         CHECK(res.status == 200);
         const auto v = fut::parse<hello>(res.body);
         REQUIRE(v.has_value());
         CHECK(v->hello == "hello, fut");
     }
 
-    SUBCASE("web /calc 乘法") {
+    SUBCASE("web /calc -- body DTO binding") {
         struct calc_out { double result{}; std::string op{}; };
-        const auto res = run_handle(web, make_req("POST", "/calc", R"({"a":6,"b":7,"op":"mul"})"));
+        const auto res = run(*web, make_req("POST", "/calc", R"({"a":6,"b":7,"op":"mul"})"));
         CHECK(res.status == 200);
         const auto v = fut::parse<calc_out>(res.body);
         REQUIRE(v.has_value());
@@ -135,14 +167,29 @@ TEST_CASE("加载 fut_app_admin / fut_app_web") {
         CHECK(v->op == "mul");
     }
 
-    SUBCASE("web /calc 除零 -> 400") {
-        const auto res = run_handle(web, make_req("POST", "/calc", R"({"a":6,"b":0,"op":"div"})"));
-        CHECK(res.status == 400);
+    SUBCASE("web /calc -- division by zero -> 400") {
+        CHECK(run(*web, make_req("POST", "/calc", R"({"a":6,"b":0,"op":"div"})")).status == 400);
     }
 
-    SUBCASE("未知路由 -> 404") {
-        CHECK(run_handle(admin, make_req("GET", "/nope")).status == 404);
-        CHECK(run_handle(web, make_req("GET", "/nope")).status == 404);
+    SUBCASE("web /sum/6/7 -- path placeholder binding") {
+        struct sum_out { long long a{}; long long b{}; long long sum{}; };
+        const auto res = run(*web, make_req("GET", "/sum/6/7"));
+        CHECK(res.status == 200);
+        const auto v = fut::parse<sum_out>(res.body);
+        REQUIRE(v.has_value());
+        CHECK(v->sum == 13);
+    }
+
+    SUBCASE("web /note -- string action") {
+        const auto res = run(*web, make_req("GET", "/note"));
+        CHECK(res.status == 200);
+        CHECK(res.content_type.rfind("text/plain", 0) == 0);
+        CHECK(res.body.find("fut web app") == 0);
+    }
+
+    SUBCASE("unknown route -> 404") {
+        CHECK(run(*admin, make_req("GET", "/nope")).status == 404);
+        CHECK(run(*web, make_req("GET", "/nope")).status == 404);
     }
 }
 

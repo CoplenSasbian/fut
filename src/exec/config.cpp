@@ -15,11 +15,11 @@ config load_config(const std::filesystem::path& path) {
     if (!std::filesystem::exists(path, ec)) return cfg;
 
     std::ifstream in(path, std::ios::binary);
-    if (!in) throw std::runtime_error("无法打开配置文件: " + path.string());
+    if (!in) throw std::runtime_error("cannot open config file: " + path.string());
     std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 
     if (bool(glz::read_json(cfg, text)))
-        throw std::runtime_error("配置文件 JSON 解析失败: " + path.string());
+        throw std::runtime_error("invalid JSON in config file: " + path.string());
     return cfg;
 }
 

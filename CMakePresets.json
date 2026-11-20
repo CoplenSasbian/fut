@@ -6,14 +6,14 @@
       "name": "base",
       "hidden": true,
       "generator": "Ninja",
-      "toolchainFile": "D:/vcpkg/vcpkg/scripts/buildsystems/vcpkg.cmake",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "environment": {
-        "PATH": "D:/mingw64/bin;${sourceDir}/.tools/cmake-4.5.1-windows-x86_64/bin;${sourceDir}/.tools;$penv{PATH}"
+        "PATH": "$env{MINGW_ROOT}/bin;${sourceDir}/.tools/cmake-4.5.1-windows-x86_64/bin;${sourceDir}/.tools;$penv{PATH}"
       },
       "cacheVariables": {
-        "CMAKE_C_COMPILER": "D:/mingw64/bin/gcc.exe",
-        "CMAKE_CXX_COMPILER": "D:/mingw64/bin/g++.exe",
-        "CMAKE_MAKE_PROGRAM": "D:/fut/.tools/ninja.exe",
+        "CMAKE_C_COMPILER": "$env{MINGW_ROOT}/bin/gcc.exe",
+        "CMAKE_CXX_COMPILER": "$env{MINGW_ROOT}/bin/g++.exe",
+        "CMAKE_MAKE_PROGRAM": "${sourceDir}/.tools/ninja.exe",
         "VCPKG_TARGET_TRIPLET": "x64-mingw-dynamic",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
@@ -21,21 +21,21 @@
     {
       "name": "debug",
       "inherits": "base",
-      "displayName": "MinGW GCC 16 / vcpkg x64-mingw-dynamic (Debug)",
+      "displayName": "MinGW GCC + vcpkg x64-mingw-dynamic (Debug)",
       "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
     {
       "name": "release",
       "inherits": "base",
-      "displayName": "MinGW GCC 16 / vcpkg x64-mingw-dynamic (Release)",
+      "displayName": "MinGW GCC + vcpkg x64-mingw-dynamic (Release)",
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     },
     {
       "name": "sandbox",
       "inherits": "release",
-      "displayName": "DSH sandbox 构建器：使用工作区内 vcpkg 克隆 (.vcpkg)",
+      "displayName": "Sandboxed build: workspace-local vcpkg clone (.vcpkg)",
       "binaryDir": "${sourceDir}/build/sandbox",
       "toolchainFile": "${sourceDir}/.vcpkg/scripts/buildsystems/vcpkg.cmake",
       "environment": {
@@ -52,26 +52,11 @@
   "buildPresets": [
     { "name": "debug", "configurePreset": "debug" },
     { "name": "release", "configurePreset": "release" },
-    {
-      "name": "sandbox",
-      "configurePreset": "sandbox",
-      "environment": {
-        "TMP": "${sourceDir}/build/tmp",
-        "TEMP": "${sourceDir}/build/tmp"
-      }
-    }
+    { "name": "sandbox", "configurePreset": "sandbox" }
   ],
   "testPresets": [
     { "name": "debug", "configurePreset": "debug", "output": { "outputOnFailure": true } },
     { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } },
-    {
-      "name": "sandbox",
-      "configurePreset": "sandbox",
-      "output": { "outputOnFailure": true },
-      "environment": {
-        "TMP": "${sourceDir}/build/tmp",
-        "TEMP": "${sourceDir}/build/tmp"
-      }
-    }
+    { "name": "sandbox", "configurePreset": "sandbox", "output": { "outputOnFailure": true } }
   ]
 }

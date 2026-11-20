@@ -1,11 +1,12 @@
 #pragma once
-// fut/json.hpp —— 基于 glaze 的 JSON 便捷函数。
-// glaze 对聚合 DTO 做编译期反射自动序列化（不需要手写字段映射）。
+// fut/json.hpp -- glaze-based JSON helpers.
+// Glaze serializes aggregate DTOs through compile-time reflection; no field
+// lists to maintain.
 
 #include <optional>
 #include <string>
 #include <string_view>
-#include <fut/app.hpp>
+#include <fut/route.hpp>
 #include <glaze/glaze.hpp>
 
 namespace fut {
@@ -14,7 +15,7 @@ namespace detail {
 struct error_dto { std::string error; };
 }
 
-// DTO -> JSON 响应
+// DTO -> JSON response
 template <class T>
 response json(const T& dto, unsigned status = 200) {
     response r;
@@ -27,12 +28,12 @@ response json(const T& dto, unsigned status = 200) {
     return r;
 }
 
-// 错误响应：{"error":"..."}
+// error response: {"error":"..."}
 inline response error(unsigned status, std::string_view message) {
     return json(detail::error_dto{std::string(message)}, status);
 }
 
-// JSON -> DTO；解析失败返回 std::nullopt
+// JSON -> DTO; returns std::nullopt on parse failure
 template <class T>
 std::optional<T> parse(std::string_view body) {
     T value{};

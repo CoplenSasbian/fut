@@ -1,6 +1,8 @@
-# fut_server —— 主程序（很少需要重编译；业务更新走 bin/apps 下的 DLL 替换）
+# fut_server -- the server executable (rarely rebuilt; business updates are
+# plain DLL swaps inside bin/apps).
 add_executable(fut_server
     main.cpp
+    builder.cpp
     server.cpp
     router.cpp
     app_loader.cpp

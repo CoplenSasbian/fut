@@ -1,27 +1,28 @@
 #pragma once
 
+// Loads app DLLs and resolves the exported fut::app_table for each.
+// Every DLL in the directory is probed; non-fut DLLs and ABI mismatches are
+// skipped with a warning.
+
 #include <filesystem>
 #include <vector>
 
-#include <fut/app.hpp>
+#include <fut/route.hpp>
 
 namespace fut::exec {
 
-// 从目录加载 app 动态库（Windows: LoadLibrary / POSIX: dlopen）。
-// 扫描目录下所有动态库，只接受导出 fut_abi_version / fut_app_create /
-// fut_app_destroy 且 ABI 版本相符的库；其余（非 app 库、旧 ABI）跳过并告警。
 class app_loader {
 public:
     struct entry {
         std::filesystem::path dll{};
-        fut::app* instance = nullptr;
+        const fut::app_table* table = nullptr;
         void* handle = nullptr;
-        void (*destroy)(fut::app*) = nullptr;
     };
 
+    // Throws std::runtime_error if the directory does not exist.
     std::vector<entry> load_dir(const std::filesystem::path& dir);
 
-    // 销毁所有实例并卸载库（进程退出时调用）
+    // Destroys the tables' host module handles (tables become invalid).
     void unload_all();
 
     ~app_loader();
@@ -30,7 +31,7 @@ public:
     app_loader& operator=(const app_loader&) = delete;
 
 private:
-    std::vector<entry> loaded_;
+    std::vector<void*> handles_;
 };
 
 } // namespace fut::exec

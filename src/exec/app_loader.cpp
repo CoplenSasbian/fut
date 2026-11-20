@@ -6,8 +6,6 @@
 #include <stdexcept>
 #include <system_error>
 
-#include <fut/version.hpp>
-
 #if defined(_WIN32)
 #  include <windows.h>
 #else
@@ -42,8 +40,7 @@ void dll_close(void* h) {
 }
 
 using abi_version_fn = std::uint32_t (*)();
-using app_create_fn  = fut::app* (*)();
-using app_destroy_fn = void (*)(fut::app*);
+using table_fn = const fut::app_table* (*)();
 
 } // namespace
 
@@ -51,7 +48,7 @@ std::vector<app_loader::entry> app_loader::load_dir(const std::filesystem::path&
     std::vector<entry> out;
     std::error_code ec;
     if (!std::filesystem::is_directory(dir, ec))
-        throw std::runtime_error("apps dir not found: " + dir.string());
+        throw std::runtime_error("apps directory not found: " + dir.string());
 
     std::vector<std::filesystem::path> files;
     for (const auto& f : std::filesystem::directory_iterator(dir, ec)) {
@@ -69,42 +66,39 @@ std::vector<app_loader::entry> app_loader::load_dir(const std::filesystem::path&
             std::fprintf(stderr, "[app_loader] cannot load %s, skipped\n", p.string().c_str());
             continue;
         }
-        auto ver     = reinterpret_cast<abi_version_fn>(dll_sym(h, "fut_abi_version"));
-        auto create  = reinterpret_cast<app_create_fn>(dll_sym(h, "fut_app_create"));
-        auto destroy = reinterpret_cast<app_destroy_fn>(dll_sym(h, "fut_app_destroy"));
-        if (!ver || !create || !destroy) {
-            dll_close(h); // 不是 fut app 库
+        auto ver = reinterpret_cast<abi_version_fn>(dll_sym(h, "fut_abi_version"));
+        auto get_table = reinterpret_cast<table_fn>(dll_sym(h, "fut_app_table"));
+        if (!ver || !get_table) {
+            dll_close(h);  // not a fut app DLL
             continue;
         }
         const std::uint32_t dll_abi = (*ver)();
         if (dll_abi != fut::abi_version) {
-            std::fprintf(stderr, "[app_loader] %s ABI mismatch (dll=%u, exec=%u), skipped\n",
+            std::fprintf(stderr, "[app_loader] %s ABI mismatch (dll=%u, server=%u), skipped\n",
                          p.string().c_str(), (unsigned)dll_abi, (unsigned)fut::abi_version);
             dll_close(h);
             continue;
         }
-        fut::app* instance = (*create)();
-        if (!instance) {
+        const fut::app_table* table = (*get_table)();
+        if (!table || table->route_count == 0 || !table->routes) {
             dll_close(h);
             continue;
         }
-        std::fprintf(stdout, "[app_loader] app '%s' (prefix '%s') <- %s\n",
-                     std::string(instance->name()).c_str(),
-                     std::string(instance->prefix()).c_str(),
+        std::fprintf(stdout, "[app_loader] app '%s' (prefix '%s', %u route(s)) <- %s\n",
+                     std::string(table->name).c_str(),
+                     std::string(table->prefix).c_str(),
+                     (unsigned)table->route_count,
                      p.string().c_str());
-        const entry e{p, instance, h, destroy};
-        out.push_back(e);
-        loaded_.push_back(e);
+        out.push_back(entry{p, table, h});
+        handles_.push_back(h);
     }
     return out;
 }
 
 void app_loader::unload_all() {
-    for (const auto& e : loaded_) {
-        if (e.instance && e.destroy) (*e.destroy)(e.instance);
-        if (e.handle) dll_close(e.handle);
-    }
-    loaded_.clear();
+    for (void* h : handles_)
+        if (h) dll_close(h);
+    handles_.clear();
 }
 
 app_loader::~app_loader() { unload_all(); }

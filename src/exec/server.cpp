@@ -14,7 +14,7 @@ namespace http = beast::http;
 
 namespace {
 
-// co_spawn 完成回调：异常只打印，不打断其它会话
+// co_spawn completion handler: log exceptions, keep other sessions alive.
 void log_exception(std::exception_ptr ep) {
     if (!ep) return;
     try {
@@ -35,33 +35,38 @@ asio::awaitable<void> run_session(beast::tcp_stream stream, router rt,
         try {
             co_await http::async_read(stream, buf, req, asio::use_awaitable);
         } catch (const boost::system::system_error&) {
-            break; // 对端关闭 / 读超时：安静结束会话
+            break;  // peer closed the connection / read timeout
         }
 
         const bool keep_alive = req.keep_alive();
 
-        // 供 fut::request 使用的头视图（req 存活期间有效）
+        // Header views for fut::request (valid while req is alive).
         std::vector<std::pair<std::string_view, std::string_view>> hdrs;
         hdrs.reserve(16);
         for (const auto& h : req.base()) hdrs.emplace_back(h.name_string(), h.value());
 
         fut::response res;
-        try {
-            const router::match m = rt.route(req.target());
-            if (!m.app) {
-                res = fut::error(404, "no route");
-            } else {
-                fut::request f_req;
-                f_req.method  = req.method_string();
-                f_req.target  = req.target();
-                f_req.path    = m.rel_path;
-                f_req.query   = m.query;
-                f_req.body    = req.body();
-                f_req.headers = hdrs;
-                res = co_await m.app->handle(f_req);
+        const std::string_view method = req.method_string();
+        const router::match m = rt.route(req.target());
+        if (!m.app) {
+            res = fut::error(404, "no route");
+        } else {
+            bool found = false;
+            for (const fut::route_record& r : m.app->entries()) {
+                if (r.method != method) continue;
+                fut::path_match pm;
+                if (!fut::match_pattern(r.pattern, m.rel_path, pm)) continue;
+                found = true;
+                try {
+                    res = co_await r.invoke(fut::request{
+                        method, req.target(), m.rel_path, m.query,
+                        req.body(), hdrs}, pm);
+                } catch (const fut::bind_error& e) {
+                    res = fut::error(400, e.what());
+                }
+                break;
             }
-        } catch (const std::exception& e) {
-            res = fut::error(500, e.what());
+            if (!found) res = fut::error(404, "no route");
         }
 
         http::response<http::string_body> out;

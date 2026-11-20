@@ -1,4 +1,4 @@
-# /api/admin —— 业务动态库 fut_app_admin.dll（更新业务只需替换此文件）
+# /api/admin -- business app DLL fut_app_admin.dll (deploy updates by swapping this file)
 add_library(fut_app_admin MODULE admin_app.cpp)
 
 set_target_properties(fut_app_admin PROPERTIES

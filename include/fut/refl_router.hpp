@@ -1,17 +1,39 @@
 #pragma once
-// fut/refl_router.hpp —— 注解驱动的路由分发（C++26 std::meta + P3394 注解）。
+// fut/refl_router.hpp -- annotation-driven routing over free functions ("actions").
 //
-// app 的 handle() 只需一行：
-//     co_return co_await fut::refl::dispatch(*this, req);
+// An action is a free function annotated with a verb: [[=fut::http_get(...)]],
+// [[=fut::http_post(...)]], [[=fut::http_put(...)]], [[=fut::http_delete(...)]];
+// its path pattern may capture segments, e.g. "/sum/{a}/{b}".
+// Parameters are bound from their annotations:
+//   [[=fut::from_body{}]]              -> request body JSON, parsed into the parameter type (glaze)
+//   [[=fut::from_query("k")]]          -> query parameter; an empty key means "use the parameter name"
+//   [[=fut::from_path("a")]]           -> a "{name}" segment of the path pattern
+//   [[=fut::from_header("X-K")]]       -> request header
+//   no annotation, type const fut::request& -> the raw request (escape hatch)
 //
-// dispatch 在编译期扫描 T 的成员函数，收集带 [[=fut::http_get/post/put/delete]]
-// 注解的函数生成静态路由表（方法+路径模式+调用器），运行时按 (method, path)
-// 匹配；调用器依据每个形参上的 [[=fut::from_body/from_query/from_path/from_header]]
-// 注解自动构造实参，并按返回值类型（response / 任意 DTO）自动包装。
+// Return type: asio::awaitable<T> where T may be
+//   * fut::response                -> passed through unchanged
+//   * std::string                  -> served directly as the response body (text/plain)
+//   * a glaze-serializable DTO     -> serialized to JSON automatically
+//   * anything else                -> compile-time error (static_assert with guidance)
 //
-// 编译器要求：GCC 15+（-freflection）。注解常量值通过 std::meta::constant_of
-// 访问（GCC 16.2 尚未开放注解的 [:ann:] 直接拼接，constant_of 为等价入口）。
-// 注：路由方法需为 public（拼接处做访问检查）。
+// The DLL-visible table is produced by (usually via the FUT_EXPORT_APP macro):
+//   constexpr auto t = fut::refl::make_app_table<^^ping, ^^echo>("demo", "/api/demo");
+//
+// Reflection is a hard requirement: this header #errors out on compilers
+// without std::meta. Annotation constant values are read through
+// std::meta::constant_of because GCC 16.2 does not yet accept direct
+// [:annotation:] splices.
+//
+// GCC implementation notes baked into the code below:
+//   * branches containing splices must be written as "if constexpr" -- GCC
+//     eagerly lowers the splice expressions of ALL branches at instantiation,
+//     so an untaken branch would hit constant_of(empty info) and throw even
+//     though it never runs;
+//   * a splice used as a template argument must go through a type alias first;
+//   * consteval query results (std::vector<std::meta::info>) cannot be
+//     subscripted for splicing directly (a library assert is not constexpr);
+//     copy them into std::array first.
 
 #include <array>
 #include <cstddef>
@@ -25,107 +47,34 @@
 
 #include <boost/asio/awaitable.hpp>
 
-#include <fut/annotate.hpp>
-#include <fut/app.hpp>
-#include <fut/json.hpp>
-#include <fut/url.hpp>
+#include <meta>
 
-// 反射为硬性要求：不支持 std::meta 的编译器直接编译失败
 #if !defined(__GNUC__) || defined(__clang__) || __GNUC__ < 15
 #  error "fut requires C++26 std::meta reflection (GCC 15+ with -freflection)"
 #endif
-#include <meta>
 
-namespace fut {
+#include <fut/annotate.hpp>
+#include <fut/json.hpp>
+#include <fut/route.hpp>
+#include <fut/url.hpp>
 
-// 参数绑定失败（JSON 解析失败、query/path/header 缺失等）-> dispatch 转 400
-struct bind_error : std::runtime_error {
-    explicit bind_error(std::string_view what) : std::runtime_error(std::string(what)) {}
-};
-
-namespace refl {
+namespace fut::refl {
 
 namespace meta = std::meta;
 
 // ---------------------------------------------------------------------------
-// 路径模式匹配：literal 段相等，{name} 段捕获
+// compile-time route metadata (per function reflection F)
 // ---------------------------------------------------------------------------
 
-struct path_match {
-    static constexpr std::size_t max_named = 8;
-    std::array<std::pair<std::string_view, std::string_view>, max_named> named{};
-    std::size_t named_count = 0;
-
-    [[nodiscard]] std::string_view segment(std::string_view key) const {
-        for (std::size_t i = 0; i < named_count; ++i)
-            if (named[i].first == key) return named[i].second;
-        return {};
-    }
-};
-
-inline bool match_pattern(std::string_view pattern, std::string_view path, path_match& out) {
-    auto next_seg = [](std::string_view s, std::size_t& i) {
-        while (i < s.size() && s[i] == '/') ++i;
-        const std::size_t b = i;
-        while (i < s.size() && s[i] != '/') ++i;
-        return s.substr(b, i - b);
-    };
-    std::string_view pat[16];
-    std::string_view seg[16];
-    std::size_t np = 0, ns = 0, i = 0;
-    for (std::string_view s = next_seg(pattern, i); !s.empty() && np < 16;
-         s = next_seg(pattern, i))
-        pat[np++] = s;
-    i = 0;
-    for (std::string_view s = next_seg(path, i); !s.empty() && ns < 16;
-         s = next_seg(path, i))
-        seg[ns++] = s;
-    if (np != ns) return false;
-
-    for (std::size_t k = 0; k < np; ++k) {
-        const std::string_view p = pat[k];
-        if (p.size() >= 2 && p.front() == '{' && p.back() == '}') {
-            if (out.named_count >= path_match::max_named) return false;
-            out.named[out.named_count++] = {p.substr(1, p.size() - 2), seg[k]};
-        } else if (p != seg[k]) {
-            return false;
-        }
-    }
-    return true;
+consteval bool is_route_function(meta::info f) {
+    return meta::is_function(f) &&
+           (!meta::annotations_of_with_type(f, ^^fut::http_get).empty() ||
+            !meta::annotations_of_with_type(f, ^^fut::http_post).empty() ||
+            !meta::annotations_of_with_type(f, ^^fut::http_put).empty() ||
+            !meta::annotations_of_with_type(f, ^^fut::http_delete).empty());
 }
 
-// ---------------------------------------------------------------------------
-// 编译期：枚举注解路由函数、提取方法与路径模式
-// ---------------------------------------------------------------------------
-
-consteval bool is_route_member(meta::info m) {
-    return meta::is_class_member(m) && meta::is_function(m) &&
-           (!meta::annotations_of_with_type(m, ^^fut::http_get).empty() ||
-            !meta::annotations_of_with_type(m, ^^fut::http_post).empty() ||
-            !meta::annotations_of_with_type(m, ^^fut::http_put).empty() ||
-            !meta::annotations_of_with_type(m, ^^fut::http_delete).empty());
-}
-
-template <class T>
-consteval std::size_t route_count() {
-    std::size_t n = 0;
-    for (auto m : meta::members_of(^^T, meta::access_context::unchecked()))
-        if (is_route_member(m)) ++n;
-    return n;
-}
-
-template <class T>
-consteval meta::info nth_route(std::size_t idx) {
-    std::size_t seen = 0;
-    for (auto m : meta::members_of(^^T, meta::access_context::unchecked())) {
-        if (!is_route_member(m)) continue;
-        if (seen == idx) return m;
-        ++seen;
-    }
-    return meta::info{};
-}
-
-// 把注解 info 拷到定长数组（consteval vector 不能直接下标拼接）
+// Copy annotation infos into a fixed array so they can be spliced safely.
 template <std::size_t N>
 consteval std::array<meta::info, N> copy_anns(meta::info entity, meta::info type) {
     std::array<meta::info, N> out{};
@@ -135,60 +84,56 @@ consteval std::array<meta::info, N> copy_anns(meta::info entity, meta::info type
     return out;
 }
 
-// 第 I 个路由的 HTTP 方法
-template <class T, std::size_t I>
+template <meta::info F>
 consteval std::string_view route_method() {
-    constexpr meta::info f = nth_route<T>(I);
-    if (!meta::annotations_of_with_type(f, ^^fut::http_get).empty()) return "GET";
-    if (!meta::annotations_of_with_type(f, ^^fut::http_post).empty()) return "POST";
-    if (!meta::annotations_of_with_type(f, ^^fut::http_put).empty()) return "PUT";
-    if (!meta::annotations_of_with_type(f, ^^fut::http_delete).empty()) return "DELETE";
+    if (!meta::annotations_of_with_type(F, ^^fut::http_get).empty()) return "GET";
+    if (!meta::annotations_of_with_type(F, ^^fut::http_post).empty()) return "POST";
+    if (!meta::annotations_of_with_type(F, ^^fut::http_put).empty()) return "PUT";
+    if (!meta::annotations_of_with_type(F, ^^fut::http_delete).empty()) return "DELETE";
     return {};
 }
 
-// 第 I 个路由的路径模式（constant_of 取注解常量值）。
-// 注意：必须用 if constexpr —— GCC 会急切下推各分支里的拼接表达式，
-// 未命中的分支若走到 constant_of(空 info) 会直接抛 std::meta::exception。
-template <class T, std::size_t I>
+// NOTE: "if constexpr" is mandatory here, see the header comment.
+template <meta::info F>
 consteval std::string_view route_pattern() {
-    constexpr meta::info f = nth_route<T>(I);
-    if constexpr (!meta::annotations_of_with_type(f, ^^fut::http_get).empty()) {
-        constexpr auto anns = copy_anns<1>(f, ^^fut::http_get);
+    if constexpr (!meta::annotations_of_with_type(F, ^^fut::http_get).empty()) {
+        constexpr auto anns = copy_anns<1>(F, ^^fut::http_get);
         return [: meta::constant_of(anns[0]) :].path.view();
     }
-    else if constexpr (!meta::annotations_of_with_type(f, ^^fut::http_post).empty()) {
-        constexpr auto anns = copy_anns<1>(f, ^^fut::http_post);
+    else if constexpr (!meta::annotations_of_with_type(F, ^^fut::http_post).empty()) {
+        constexpr auto anns = copy_anns<1>(F, ^^fut::http_post);
         return [: meta::constant_of(anns[0]) :].path.view();
     }
-    else if constexpr (!meta::annotations_of_with_type(f, ^^fut::http_put).empty()) {
-        constexpr auto anns = copy_anns<1>(f, ^^fut::http_put);
+    else if constexpr (!meta::annotations_of_with_type(F, ^^fut::http_put).empty()) {
+        constexpr auto anns = copy_anns<1>(F, ^^fut::http_put);
         return [: meta::constant_of(anns[0]) :].path.view();
     }
     else {
-        constexpr auto anns = copy_anns<1>(f, ^^fut::http_delete);
+        constexpr auto anns = copy_anns<1>(F, ^^fut::http_delete);
         return [: meta::constant_of(anns[0]) :].path.view();
     }
 }
 
 // ---------------------------------------------------------------------------
-// 编译期：参数反射
+// compile-time parameter metadata
 // ---------------------------------------------------------------------------
 
-template <class T, std::size_t RI>
+template <meta::info F>
 consteval std::size_t param_count() {
-    return meta::parameters_of(nth_route<T>(RI)).size();
+    return meta::parameters_of(F).size();
 }
 
-template <class T, std::size_t RI, std::size_t P>
+template <meta::info F, std::size_t P>
 consteval meta::info nth_param() {
-    return meta::parameters_of(nth_route<T>(RI)).data()[P];
+    return meta::parameters_of(F).data()[P];
 }
 
-// 参数注解里的 key；为空则回落到参数名（identifier_of 保留参数名）。
-// 调用方（make_arg）保证该参数确有 Ann 注解，故此处的拼接永不落到空 info。
-template <class T, std::size_t RI, std::size_t P, class Ann>
+// Key of a binding annotation; an empty key falls back to the parameter name
+// (GCC preserves parameter names for identifier_of).
+// Callers guarantee the parameter actually carries annotation Ann.
+template <meta::info F, std::size_t P, class Ann>
 consteval std::string_view param_key() {
-    constexpr meta::info p = nth_param<T, RI, P>();
+    constexpr meta::info p = nth_param<F, P>();
     constexpr auto anns = copy_anns<1>(p, ^^Ann);
     constexpr bool has_ann = anns[0] != meta::info{};
     if constexpr (!has_ann) {
@@ -200,10 +145,10 @@ consteval std::string_view param_key() {
 }
 
 // ---------------------------------------------------------------------------
-// 运行时：参数构造
+// runtime argument construction
 // ---------------------------------------------------------------------------
 
-// 标量转换：std::string 直取；其它类型用 glaze 从原始串解析
+// Scalar conversion: std::string is taken as-is, other types parsed by glaze.
 template <class A>
 A convert_scalar(std::string_view raw, std::string_view what) {
     if constexpr (std::is_same_v<A, std::string>) {
@@ -216,126 +161,146 @@ A convert_scalar(std::string_view raw, std::string_view what) {
     }
 }
 
-// 构造路由函数的第 P 个实参
-template <class T, std::size_t RI, std::size_t P>
-decltype(auto) make_arg(const ::fut::request& req, const path_match& pm) {
-    constexpr meta::info p = nth_param<T, RI, P>();
-    // GCC: 拼接需先经别名成为类型，再作模板实参（不能直接放模板实参位）
+template <meta::info F, std::size_t P>
+decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm) {
+    constexpr meta::info p = nth_param<F, P>();
+    // A splice used as a template argument must be aliased to a type first.
     using param_type = [: meta::type_of(p) :];
     using Bare = std::remove_cvref_t<param_type>;
 
-    // 逃生舱：const fut::request& 直接传原始请求
+    // escape hatch: const fut::request& receives the raw request
     if constexpr (std::is_same_v<Bare, ::fut::request>) {
         return static_cast<const ::fut::request&>(req);
     }
-    // 请求体 -> DTO（glaze 编译期反射解析）
+    // request body -> parameter type (glaze compile-time reflection)
     else if constexpr (!meta::annotations_of_with_type(p, ^^fut::from_body).empty()) {
         Bare v{};
         if (bool(glz::read_json(v, req.body)))
             throw ::fut::bind_error("invalid JSON body");
         return v;
     }
-    // query 参数
+    // query parameter
     else if constexpr (!meta::annotations_of_with_type(p, ^^fut::from_query).empty()) {
-        constexpr std::string_view key = param_key<T, RI, P, ::fut::from_query>();
+        constexpr std::string_view key = param_key<F, P, ::fut::from_query>();
         for (const auto& [kk, vv] : ::fut::parse_query(req.query))
             if (kk == key) return convert_scalar<Bare>(vv, key);
         throw ::fut::bind_error("missing query parameter: " + std::string(key));
     }
-    // 路径 {占位} 段
+    // path "{placeholder}" segment
     else if constexpr (!meta::annotations_of_with_type(p, ^^fut::from_path).empty()) {
-        constexpr std::string_view key = param_key<T, RI, P, ::fut::from_path>();
+        constexpr std::string_view key = param_key<F, P, ::fut::from_path>();
         const std::string_view seg = pm.segment(key);
         if (seg.empty())
             throw ::fut::bind_error("missing path parameter: " + std::string(key));
         return convert_scalar<Bare>(seg, key);
     }
-    // 请求头
+    // request header
     else if constexpr (!meta::annotations_of_with_type(p, ^^fut::from_header).empty()) {
-        constexpr std::string_view key = param_key<T, RI, P, ::fut::from_header>();
+        constexpr std::string_view key = param_key<F, P, ::fut::from_header>();
         for (const auto& [hn, hv] : req.headers)
             if (hn == key) return convert_scalar<Bare>(hv, key);
         throw ::fut::bind_error("missing header: " + std::string(key));
     } else {
         static_assert(!sizeof(Bare),
-                      "route param needs a binding annotation "
-                      "(from_body / from_query / from_path / from_header), "
+                      "fut: this route parameter needs a binding annotation "
+                      "(from_body / from_query / from_path / from_header) "
                       "or must be 'const fut::request&'");
     }
 }
 
 // ---------------------------------------------------------------------------
-// 运行时：调用器与返回值包装
+// invocation + return-type adaptation
 // ---------------------------------------------------------------------------
 
 template <class Raw> struct await_value;
 template <class V, class E>
 struct await_value<boost::asio::awaitable<V, E>> { using type = V; };
 template <class Raw> using await_value_t = typename await_value<Raw>::type;
+template <class Raw>
+inline constexpr bool is_awaitable_v = requires { typename await_value<Raw>::type; };
 
-template <class T, std::size_t RI, std::size_t... P>
-boost::asio::awaitable<::fut::response> invoke_impl(
-    T& self, const ::fut::request& req, const path_match& pm, std::index_sequence<P...>) {
-    using Raw = [: meta::return_type_of(nth_route<T>(RI)) :];
+template <meta::info F, std::size_t... P>
+boost::asio::awaitable<::fut::response> invoke_impl(const ::fut::request& req,
+                                                    const ::fut::path_match& pm,
+                                                    std::index_sequence<P...>) {
+    using Raw = [: meta::return_type_of(F) :];
+    static_assert(is_awaitable_v<Raw>,
+                  "fut: an action must return asio::awaitable<T>");
     using Val = await_value_t<Raw>;
+
     if constexpr (std::is_same_v<Val, ::fut::response>) {
-        co_return co_await (self.[: nth_route<T>(RI) :])(make_arg<T, RI, P>(req, pm)...);
-    } else {
-        // 返回任意 DTO：自动 glaze 序列化为 200 JSON
-        co_return ::fut::json(
-            co_await (self.[: nth_route<T>(RI) :])(make_arg<T, RI, P>(req, pm)...));
+        co_return co_await ([: F :])(make_arg<F, P>(req, pm)...);
+    }
+    else if constexpr (std::is_same_v<Val, std::string>) {
+        // plain string -> response body as-is
+        std::string body = co_await ([: F :])(make_arg<F, P>(req, pm)...);
+        ::fut::response r;
+        r.status = 200;
+        r.content_type = "text/plain; charset=utf-8";
+        r.body = std::move(body);
+        co_return r;
+    }
+    else if constexpr (requires {
+                           glz::write_json(std::declval<Val&>(), std::declval<std::string&>());
+                       }) {
+        // glaze-serializable DTO -> JSON
+        co_return ::fut::json(co_await ([: F :])(make_arg<F, P>(req, pm)...));
+    }
+    else {
+        static_assert(!sizeof(Val),
+                      "fut: unsupported action return type -- expected "
+                      "awaitable<fut::response>, awaitable<std::string>, or "
+                      "awaitable<DTO> with a glaze-serializable DTO");
     }
 }
 
-template <class T, std::size_t RI>
-boost::asio::awaitable<::fut::response> invoke_route(
-    T& self, const ::fut::request& req, const path_match& pm) {
-    constexpr std::size_t n = param_count<T, RI>();
-    return invoke_impl<T, RI>(self, req, pm, std::make_index_sequence<n>{});
+template <meta::info F>
+boost::asio::awaitable<::fut::response> invoke_route(const ::fut::request& req,
+                                                     const ::fut::path_match& pm) {
+    constexpr std::size_t n = param_count<F>();
+    return invoke_impl<F>(req, pm, std::make_index_sequence<n>{});
 }
 
 // ---------------------------------------------------------------------------
-// 静态路由表 + 分发
+// app table construction
 // ---------------------------------------------------------------------------
 
-template <class T>
-struct route_entry {
-    std::string_view method{};
-    std::string_view pattern{};
-    boost::asio::awaitable<::fut::response> (*invoke)(
-        T&, const ::fut::request&, const path_match&) = nullptr;
-};
-
-template <class T>
-constexpr auto make_route_table() {
-    constexpr std::size_t n = route_count<T>();
-    std::array<route_entry<T>, n> out{};
+template <meta::info... Fs>
+constexpr std::array<::fut::route_record, sizeof...(Fs)> records_v = [] {
+    std::array<::fut::route_record, sizeof...(Fs)> out{};
     [&]<std::size_t... I>(std::index_sequence<I...>) {
-        ((out[I] = route_entry<T>{route_method<T, I>(), route_pattern<T, I>(),
-                                   &invoke_route<T, I>}),
+        constexpr meta::info fns[]{Fs...};
+        ((out[I] = ::fut::route_record{route_method<fns[I]>(),
+                                        route_pattern<fns[I]>(),
+                                        &invoke_route<fns[I]>}),
          ...);
-    }(std::make_index_sequence<n>());
+    }(std::make_index_sequence<sizeof...(Fs)>());
     return out;
+}();
+
+// constexpr auto t = fut::refl::make_app_table<^^ping, ^^echo>("demo", "/api/demo");
+template <meta::info... Fs>
+constexpr ::fut::app_table make_app_table(std::string_view name, std::string_view prefix) {
+    return ::fut::app_table{name, prefix, records_v<Fs...>.data(), sizeof...(Fs)};
 }
 
-template <class T>
-constexpr auto route_table_v = make_route_table<T>();
+} // namespace fut::refl
 
-// app::handle 的标准实现：按 (method, path) 分发到注解路由
-template <class T>
-boost::asio::awaitable<::fut::response> dispatch(T& self, const ::fut::request& req) {
-    for (const auto& r : route_table_v<T>) {
-        if (r.method != req.method) continue;
-        path_match pm;
-        if (!match_pattern(r.pattern, req.path, pm)) continue;
-        try {
-            co_return co_await r.invoke(self, req, pm);
-        } catch (const ::fut::bind_error& e) {
-            co_return ::fut::error(400, e.what());
-        }
+// ---------------------------------------------------------------------------
+// DLL export helper -- place at file scope, once per DLL:
+//     FUT_EXPORT_APP("admin", "/api/admin", ^^ping, ^^echo)
+// exports fut_abi_version() and fut_app_table() for the server loader.
+// ---------------------------------------------------------------------------
+
+#define FUT_EXPORT_APP(NAME, PREFIX, ...)                                         \
+    namespace {                                                                    \
+    constexpr auto fut_app_table_v =                                               \
+        ::fut::refl::make_app_table<__VA_ARGS__>((NAME), (PREFIX));                 \
+    }                                                                              \
+    extern "C" {                                                                    \
+    FUT_EXPORT std::uint32_t fut_abi_version() { return ::fut::abi_version; }      \
+    FUT_EXPORT const ::fut::app_table* fut_app_table() {                          \
+        return &fut_app_table_v;                                                    \
+    }                                                                              \
     }
-    co_return ::fut::error(404, "no route");
-}
 
-} // namespace refl
-} // namespace fut

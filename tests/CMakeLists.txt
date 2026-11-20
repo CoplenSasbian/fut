@@ -1,11 +1,12 @@
-# ---- doctest 测试套件 ----
+# ---- doctest suite ----
 
-# vcpkg 生成的 doctestConfig.cmake 只定义 target；这里补上官方的用例发现脚本
+# The vcpkg-generated doctestConfig.cmake only defines the target; pull in the
+# official per-case discovery script as well.
 if(NOT COMMAND doctest_discover_tests)
     include("${doctest_DIR}/doctest.cmake")
 endif()
 
-# 路由：纯逻辑
+# Prefix routing (pure logic)
 add_executable(test_router test_router.cpp ${PROJECT_SOURCE_DIR}/src/exec/router.cpp)
 target_include_directories(test_router PRIVATE
     ${PROJECT_SOURCE_DIR}/include
@@ -20,7 +21,7 @@ target_include_directories(test_reflect PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(test_reflect PRIVATE doctest::doctest)
 doctest_discover_tests(test_reflect)
 
-# C++26 注解路由：编译期路由表 + 参数绑定全链路
+# C++26 annotation router: compile-time tables + every binding style
 add_executable(test_reflect_router test_reflect_router.cpp)
 target_include_directories(test_reflect_router PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(test_reflect_router PRIVATE doctest::doctest Boost::asio glaze::glaze)
@@ -29,7 +30,7 @@ if(WIN32)
 endif()
 doctest_discover_tests(test_reflect_router)
 
-# 全链路：app_loader 加载 fut_app_admin / fut_app_web DLL，驱动协程调用 handle
+# End-to-end: app_loader loads fut_app_admin / fut_app_web and drives their tables
 add_executable(test_apps test_apps.cpp ${PROJECT_SOURCE_DIR}/src/exec/app_loader.cpp)
 target_include_directories(test_apps PRIVATE
     ${PROJECT_SOURCE_DIR}/include

@@ -1,5 +1,5 @@
 #pragma once
-// fut/url.hpp —— 极简 URL 工具：query 解析 + %XX / '+' 解码。
+// fut/url.hpp -- minimal URL helpers: query parsing + %XX / '+' decoding.
 
 #include <string>
 #include <string_view>

@@ -1,35 +1,33 @@
 #pragma once
-// fut/annotate.hpp —— C++26 注解（P3394）类型定义。
+// fut/annotate.hpp -- C++26 annotation types (P3394).
 //
-// 用法（写在业务 app 的成员函数上）：
-//   [[=fut::http_get ("/ping")]]           成员函数 -> GET 路由
-//   [[=fut::http_post("/echo")]]           成员函数 -> POST 路由
-//   [[=fut::http_put ("/x")]]              PUT 路由
-//   [[=fut::http_delete("/x")]]            DELETE 路由
+// Verbs (on free-function actions):
+//   [[=fut::http_get ("/ping")]]        GET route
+//   [[=fut::http_post("/echo")]]        POST route
+//   [[=fut::http_put ("/x")]]           PUT route
+//   [[=fut::http_delete("/x")]]         DELETE route
+// Path patterns may capture segments: "/sum/{a}/{b}".
 //
-// 路由路径里可用 {占位}："/sum/{a}/{b}"，配合参数注解 from_path。
+// Parameter binding annotations (on action parameters):
+//   [[=fut::from_body{}]]         <- request body JSON, parsed into the parameter type
+//   [[=fut::from_query("name")]]  <- query parameter (empty key -> parameter name)
+//   [[=fut::from_path("a")]]      <- path "{placeholder}" segment (empty key -> parameter name)
+//   [[=fut::from_header("X-K")]]  <- request header
+//   no annotation + const fut::request& -> raw request (escape hatch)
 //
-// 参数绑定注解（写在路由函数的形参上）：
-//   [[=fut::from_body{}]]        形参 <- 请求体 JSON（glaze 解析为形参类型）
-//   [[=fut::from_query("name")]] 形参 <- query 参数；key 为空时用参数名：
-//                                  [[=fut::from_query{}]] std::string name
-//   [[=fut::from_path("a")]]     形参 <- 路径 {占位} 段；key 为空时用参数名
-//   [[=fut::from_header("X")]]   形参 <- 请求头
-//   无注解且形参为 const fut::request& -> 原始请求（逃生舱）
-//
-// 注解类型必须是 structural（定长字符缓冲，不走堆），GCC 16.2 已验证。
+// Annotation types must be structural (fixed char buffers, nothing on the heap).
 
 #include <cstddef>
 #include <string_view>
 
 namespace fut {
 
-inline constexpr std::size_t annot_path_max = 128;  // 路由路径/键的容量
+inline constexpr std::size_t annot_path_max = 128;  // capacity for route patterns / keys
 inline constexpr std::size_t annot_key_max = 64;
 
 namespace detail {
 
-// 定长字符串缓冲（structural：char 数组 + constexpr 构造）
+// Fixed-capacity string buffer (structural: char array + constexpr constructors).
 template <std::size_t Max>
 struct text_buf {
     char chars[Max]{};
@@ -56,21 +54,13 @@ struct verb_base {
 
 } // namespace detail
 
-// ---- HTTP 方法注解 ----
-struct http_get  : detail::verb_base<annot_path_max> {
-    using verb_base::verb_base;
-};
-struct http_post : detail::verb_base<annot_path_max> {
-    using verb_base::verb_base;
-};
-struct http_put  : detail::verb_base<annot_path_max> {
-    using verb_base::verb_base;
-};
-struct http_delete : detail::verb_base<annot_path_max> {
-    using verb_base::verb_base;
-};
+// ---- HTTP verb annotations ----
+struct http_get    : detail::verb_base<annot_path_max> { using verb_base::verb_base; };
+struct http_post   : detail::verb_base<annot_path_max> { using verb_base::verb_base; };
+struct http_put    : detail::verb_base<annot_path_max> { using verb_base::verb_base; };
+struct http_delete : detail::verb_base<annot_path_max> { using verb_base::verb_base; };
 
-// ---- 参数绑定注解 ----
+// ---- parameter binding annotations ----
 struct from_body {};
 
 struct from_query {
