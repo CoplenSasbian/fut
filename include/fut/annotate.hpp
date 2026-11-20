@@ -81,16 +81,16 @@ consteval std::array<std::meta::info, max_members> copy_members() {
     return out;
 }
 
-// The http_action annotation of a member (copy-to-array, const comparison).
+// The http_action annotation of a member.
+// GCC records constexpr-function annotation types as cv-qualified, so the
+// filter target is ^^const http_action. annotations_of_with_type does the
+// comparison; no manual type_of iteration needed.
 template <std::size_t N, std::meta::info Member>
 consteval std::array<std::meta::info, N> copy_verb_anns() {
     std::array<std::meta::info, N> out{};
     std::size_t i = 0;
-    for (auto a : std::meta::annotations_of(Member)) {
-        // GCC records constexpr fn annotation type as "const http_action"
-        if (i < N && std::meta::type_of(a) == ^^const fut::http_action)
-            out[i++] = a;
-    }
+    for (auto a : std::meta::annotations_of_with_type(Member, ^^const fut::http_action))
+        if (i < N) out[i++] = a;
     return out;
 }
 
