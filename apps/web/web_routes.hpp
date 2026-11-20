@@ -5,7 +5,8 @@
 // This header carries the annotated controller DECLARATIONS; definitions live
 // in web_routes.cpp as an ordinary translation unit. The CMake-generated
 // export unit scans namespace web (recursively -- the beta controller sits
-// in a nested namespace) and links to the definitions.
+// in a nested namespace) and registers the routes; the add_app() prefix
+// arrives as FUT_APP_PREFIX and is composed into every path.
 
 #include <string>
 

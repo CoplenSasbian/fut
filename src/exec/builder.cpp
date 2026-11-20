@@ -2,19 +2,20 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
-#include <memory>
+#include <string>
 #include <system_error>
 #include <thread>
 #include <vector>
 
 #include <boost/asio.hpp>
 
-#include <fut/http/annotate.hpp>
+#include <fut/ctx.hpp>
+#include <fut/http/route.hpp>
 #include <fut/json.hpp>
 #include <fut/log.hpp>
-#include <fut/http/refl_router.hpp>
 
 #include "app_loader.hpp"
 #include "config.hpp"
@@ -47,33 +48,30 @@ std::filesystem::path exe_dir() {
     return std::filesystem::current_path();
 }
 
-// Read by the built-in /api/core/status action once the router is populated.
+// Read by the built-in /api/core/status route once the router is populated.
 const router* g_status_router = nullptr;
 
-struct app_info_dto { std::string name; std::string prefix; std::size_t routes{}; };
-
-struct status_dto {
-    std::string service = "fut";
-    std::string version = fut::library_version;
-    std::uint32_t abi = fut::abi_version;
-    std::vector<app_info_dto> apps;
+struct app_info_dto {
+    std::string name{};
+    std::string prefix{};
+    std::size_t routes{};
 };
 
-// Built-in introspection endpoint: GET /api/core/status
-namespace core_ns {
-[[=fut::http_get("/status")]]
-asio::awaitable<status_dto> core_status(const fut::request& req) {
-    (void)req;
+struct status_dto {
+    std::string service{"fut"};
+    std::string version{fut::library_version};
+    std::uint32_t abi{fut::abi_version};
+    std::vector<app_info_dto> apps{};
+};
+
+// Built-in introspection route: GET /api/core/status
+asio::awaitable<fut::response> core_status(const fut::request&, const fut::path_match&) {
     status_dto dto;
     if (g_status_router)
-        for (const fut::app_table* t : g_status_router->apps())
-            dto.apps.push_back({std::string(t->name), std::string(t->prefix), t->route_count});
-    co_return dto;
+        for (const auto& a : g_status_router->apps())
+            dto.apps.push_back(app_info_dto{a.name, a.prefix, a.routes});
+    co_return fut::json(dto);
 }
-} // namespace core_ns
-
-constexpr auto core_table_v =
-    fut::refl::make_scanned_table<^^core_ns>("core", "/api/core");
 
 void log_exception(std::exception_ptr ep) {
     if (!ep) return;
@@ -125,10 +123,16 @@ int server_builder::run() {
 
         asio::io_context ioc;
         router rt;
+
+        // App DLLs register themselves into the router through the context.
         app_loader loader;
-        for (const auto& e : loader.load_dir(apps_dir)) rt.add(e.table);
-        for (const fut::app_table* t : builtins_) rt.add(t);
-        rt.add(&core_table_v);
+        loader.load_dir(apps_dir, rt);
+
+        // Built-in app: the introspection route plus any embedder routes.
+        rt.begin_app("core", "/api/core");
+        rt.add_route(fut::method::GET, "/api/core/status", &core_status);
+        for (const extra_route& r : extra_routes_) rt.add_route(r.method, r.pattern, r.invoke);
+        rt.end_app();
         g_status_router = &rt;
 
         server srv(ioc, cfg.host, cfg.port, rt, timeout);
@@ -140,10 +144,9 @@ int server_builder::run() {
         const int extra = std::max(0, cfg.threads - 1);
         for (int i = 0; i < extra; ++i) pool.emplace_back([&ioc] { ioc.run(); });
 
-        fut::log::core_log.info("fut {} (ABI {}) starting: {} thread(s), {} app DLL(s); Ctrl+C to stop",
+        fut::log::core_log.info("fut {} (ABI {}) starting: {} thread(s), {} app(s); Ctrl+C to stop",
                                  fut::library_version, (unsigned)fut::abi_version,
-                                 (int)cfg.threads,
-                                 (int)(rt.apps().size() - 1 - builtins_.size()));
+                                 (int)cfg.threads, (unsigned)rt.apps().size());
 
         asio::co_spawn(ioc, srv.listen(), log_exception);
 

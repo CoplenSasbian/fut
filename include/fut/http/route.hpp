@@ -1,14 +1,16 @@
 #pragma once
 
-// fut/http/route.hpp -- the HTTP vocabulary: request/response, path matching,
-// route records, app tables, the method enum, and the scannable contract.
+// fut/http/route.hpp -- the HTTP vocabulary: request/response, the method
+// enum, path matching, the bind error, and path composition.
 //
-// This file has no dependencies beyond the Asio awaitable (used in the
-// route_record's invoke signature) and the standard library.
+// No DLL export surface lives here any more: apps register themselves
+// through fut::http::router_module, obtained from the context
+// (see fut/ctx.hpp and fut/http/router.hpp).
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -16,14 +18,10 @@
 #include <utility>
 #include <vector>
 
-#include <boost/asio/awaitable.hpp>
-
-#include <fut/scannable.hpp>
-
 namespace fut {
 
 inline constexpr std::uint32_t abi_version = 1;
-inline constexpr const char* library_version = "0.2.0";
+inline constexpr const char* library_version = "0.3.0";
 
 #if defined(_WIN32)
 #  define FUT_EXPORT __declspec(dllexport)
@@ -41,6 +39,24 @@ enum class method : std::uint8_t {
     PUT,
     DEL,   // "DELETE" is a Windows macro
 };
+
+constexpr std::string_view to_string(method m) {
+    switch (m) {
+    case method::GET:  return "GET";
+    case method::POST: return "POST";
+    case method::PUT:  return "PUT";
+    case method::DEL:  return "DELETE";
+    }
+    return "UNKNOWN";
+}
+
+inline std::optional<method> method_from_string(std::string_view s) {
+    if (s == "GET") return method::GET;
+    if (s == "POST") return method::POST;
+    if (s == "PUT") return method::PUT;
+    if (s == "DELETE") return method::DEL;
+    return std::nullopt;
+}
 
 // ---------------------------------------------------------------------------
 // detail::text_buf -- fixed-capacity string buffer (structural)
@@ -73,7 +89,7 @@ struct text_buf {
 struct request {
     std::string_view method{};   // "GET" / "POST" / ...
     std::string_view target{};   // raw request target (with query)
-    std::string_view path{};     // sub-path relative to the app prefix
+    std::string_view path{};     // path part of the target
     std::string_view query{};    // everything after '?'
     std::string_view body{};     // request body
     std::span<const std::pair<std::string_view, std::string_view>> headers{};
@@ -137,29 +153,51 @@ inline bool match_pattern(std::string_view pattern, std::string_view path, path_
     return true;
 }
 
+// Number of literal (non-placeholder) segments: the specificity of a pattern.
+inline std::size_t literal_segments(std::string_view pattern) {
+    std::size_t n = 0, i = 0;
+    while (i < pattern.size()) {
+        while (i < pattern.size() && pattern[i] == '/') ++i;
+        const std::size_t b = i;
+        while (i < pattern.size() && pattern[i] != '/') ++i;
+        if (i == b) break;
+        const std::string_view seg = pattern.substr(b, i - b);
+        if (!(seg.size() >= 2 && seg.front() == '{' && seg.back() == '}')) ++n;
+    }
+    return n;
+}
+
+// ---------------------------------------------------------------------------
+// join_path -- compose a route path from up to four parts, single-slashed
+// ---------------------------------------------------------------------------
+
+namespace detail {
+
+inline void append_segment(std::string& out, std::string_view seg) {
+    std::size_t begin = 0;
+    std::size_t end = seg.size();
+    while (begin < end && seg[begin] == '/') ++begin;
+    while (end > begin && seg[end - 1] == '/') --end;
+    if (begin == end) return;
+    if (out.empty() || out.back() != '/') out += '/';
+    out.append(seg.substr(begin, end - begin));
+}
+
+} // namespace fut::detail
+
+inline std::string join_path(std::string_view a, std::string_view b,
+                             std::string_view c = {}, std::string_view d = {}) {
+    std::string out;
+    detail::append_segment(out, a);
+    detail::append_segment(out, b);
+    detail::append_segment(out, c);
+    detail::append_segment(out, d);
+    if (out.empty()) out = "/";
+    return out;
+}
+
 struct bind_error : std::runtime_error {
     explicit bind_error(std::string_view what) : std::runtime_error(std::string(what)) {}
-};
-
-// ---------------------------------------------------------------------------
-// route records / app table -- the DLL export surface
-// ---------------------------------------------------------------------------
-
-struct route_record {
-    std::string_view method{};    // "GET" / "POST" / ...
-    std::string_view pattern{};   // e.g. "/sum/{a}/{b}"
-    boost::asio::awaitable<response> (*invoke)(const request&, const path_match&) = nullptr;
-};
-
-struct app_table {
-    std::string_view name{};     // "admin"
-    std::string_view prefix{};   // "/api/admin"
-    const route_record* routes = nullptr;
-    std::size_t route_count = 0;
-
-    [[nodiscard]] std::span<const route_record> entries() const {
-        return {routes, route_count};
-    }
 };
 
 } // namespace fut

@@ -208,10 +208,4 @@ boost::asio::awaitable<::fut::response> invoke_member_route(const ::fut::request
     return invoke_member_impl<CtrlT, M>(req, pm, std::make_index_sequence<n>{});
 }
 
-consteval std::string_view join_pattern(std::string_view base, std::string_view sub) {
-    std::string joined{base};
-    joined += sub;
-    return {std::define_static_string(joined), joined.size()};
-}
-
 } // namespace fut::refl

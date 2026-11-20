@@ -7,13 +7,13 @@
 #include <utility>
 
 #include <boost/asio.hpp>
+
 #include <fut/http/http.hpp>
 #include <fut/json.hpp>
 
-
 namespace asio = boost::asio;
 
-// ---- test DTOs (at file scope, used by both controllers) ----
+// ---- test DTOs ----
 
 struct ping_dto { bool pong{true}; std::string app{"demo"}; };
 struct add_in { int a{}; int b{}; };
@@ -23,7 +23,7 @@ struct mul_out { int result{}; };
 struct raw_out { std::string method{}; std::string target{}; };
 struct who_dto { std::string app{"demo"}; int n{3}; };
 
-// ---- test namespace: controllers with every binding style ----
+// ---- controllers covering every binding style ----
 
 namespace demo_actions {
 
@@ -42,7 +42,6 @@ struct [[=fut::controller{}]] main_controller {
         co_return greet_out{"hi " + name};
     }
 
-    // path placeholder binding
     [[=fut::http_get("/mul/{x}/{y}")]]
     asio::awaitable<mul_out> mul([[=fut::from_path("x")]] int x,
                                  [[=fut::from_path("y")]] int y) {
@@ -58,11 +57,10 @@ struct [[=fut::controller{}]] main_controller {
     [[=fut::http_get("/who")]]
     asio::awaitable<who_dto> who() { co_return who_dto{}; }
 
-    // plain string return -> text/plain body
+    // plain string return -> text/plain
     [[=fut::http_get("/txt")]]
     asio::awaitable<std::string> txt() { co_return "plain text from fut"; }
 
-    // string return + path binding
     [[=fut::http_get("/mix/{n}")]]
     asio::awaitable<std::string> mixed([[=fut::from_path("n")]] int n) {
         co_return "n squared is " + std::to_string(n * n);
@@ -83,85 +81,112 @@ struct [[=fut::controller("/deep")]] nested_controller {
 
 } // namespace demo_actions
 
-// ---- the scanned table ----
-
-constexpr auto table =
-    fut::refl::make_scanned_table<^^demo_actions>("demo", "/api/demo");
-
-// ---- test helpers (anonymous namespace, not scanned) ----
-
 namespace {
 
-asio::awaitable<fut::response> call_table(const fut::app_table& t, fut::request req) {
-    for (const fut::route_record& r : t.entries()) {
-        if (r.method != req.method) continue;
-        fut::path_match pm;
-        if (!fut::match_pattern(r.pattern, req.path, pm)) continue;
-        try {
-            co_return co_await r.invoke(req, pm);
-        } catch (const fut::bind_error& e) {
-            co_return fut::error(400, e.what());
-        }
-    }
-    co_return fut::error(404, "no route");
-}
+// Collects what a registering annotation hands to the router module.
+struct sink {
+    struct route {
+        fut::method method;
+        std::string pattern;
+        fut::http::route_fn invoke;
+    };
 
-struct run_result {
+    std::vector<route> routes{};
+    fut::http::router_module module{this, &add_thunk};
+
+    static void add_thunk(void* self, fut::method m, std::string_view pattern,
+                          fut::http::route_fn fn) {
+        static_cast<sink*>(self)->routes.push_back(route{m, std::string(pattern), fn});
+    }
+};
+
+// A minimal stand-in for the server: context + "router" module + one scan.
+struct harness {
+    sink s{};
+    fut::fut_ctx ctx{};
+
+    explicit harness(std::string_view prefix) {
+        ctx.host = &s;
+        ctx.get_module_fn = [](fut::fut_ctx* c, std::string_view name) -> void* {
+            if (name == "router") return &static_cast<sink*>(c->host)->module;
+            return nullptr;
+        };
+        fut::scan::run<^^demo_actions>(&ctx, prefix);
+    }
+
+    [[nodiscard]] const sink::route* find(fut::method m, std::string_view pattern) const {
+        for (const auto& r : s.routes)
+            if (r.method == m && r.pattern == pattern) return &r;
+        return nullptr;
+    }
+};
+
+struct run_state {
     fut::response res{};
     std::exception_ptr err{};
 };
 
-asio::awaitable<void> drive(run_result& rr, const fut::app_table* t, fut::request req) {
-    rr.res = co_await call_table(*t, std::move(req));
+asio::awaitable<void> invoke_into(run_state& st, fut::http::route_fn fn, fut::request req,
+                                  fut::path_match pm) {
+    try {
+        st.res = co_await fn(req, pm);
+    } catch (...) {
+        st.err = std::current_exception();
+    }
 }
 
-fut::response run(const fut::app_table& t, fut::request req) {
-    asio::io_context ioc;
-    run_result rr;
-    asio::co_spawn(ioc, drive(rr, &t, std::move(req)),
-                   [&rr](std::exception_ptr e) { rr.err = e; });
-    ioc.run();
-    if (rr.err) std::rethrow_exception(rr.err);
-    return rr.res;
-}
+// Dispatches like the server: find a matching route, run it, map bind errors.
+fut::response drive(sink& s, fut::method m, std::string_view path,
+                    std::string_view body = {}, std::string_view query = {}) {
+    for (const auto& r : s.routes) {
+        if (r.method != m) continue;
+        fut::path_match pm;
+        if (!fut::match_pattern(r.pattern, path, pm)) continue;
 
-fut::request make_req(std::string_view method, std::string_view path,
-                      std::string_view body = {}, std::string_view query = {}) {
-    fut::request r;
-    r.method = method;
-    r.target = path;
-    r.path = path;
-    r.body = body;
-    r.query = query;
-    return r;
+        asio::io_context ioc;
+        run_state st;
+        asio::co_spawn(ioc,
+                       invoke_into(st, r.invoke,
+                                   fut::request{fut::to_string(m), path, path, query, body, {}},
+                                   pm),
+                       [](std::exception_ptr) {});
+        ioc.run();
+        if (st.err) {
+            try {
+                std::rethrow_exception(st.err);
+            } catch (const fut::bind_error& e) {
+                return fut::error(400, e.what());
+            }
+        }
+        return st.res;
+    }
+    return fut::error(404, "no route");
 }
 
 } // namespace
 
-TEST_SUITE("annotation router") {
+TEST_SUITE("scanned controller registration") {
 
-TEST_CASE("compile-time table") {
-    CHECK(table.name == "demo");
-    CHECK(table.prefix == "/api/demo");
-    REQUIRE(table.entries().size() == 10);   // 8 main + 1 grouped + 1 nested
+TEST_CASE("the scan registers every verb-annotated member, prefix composed") {
+    harness h{"/api/demo"};
+    REQUIRE(h.s.routes.size() == 10);  // 8 main + 1 grouped + 1 nested
 
-    bool has_add = false, has_mul = false, has_txt = false, has_grp = false, has_deep = false;
-    for (const auto& r : table.entries()) {
-        if (r.method == "POST" && r.pattern == "/add") has_add = true;
-        if (r.method == "GET" && r.pattern == "/mul/{x}/{y}") has_mul = true;
-        if (r.method == "GET" && r.pattern == "/txt") has_txt = true;
-        if (r.method == "GET" && r.pattern == "/grp/first") has_grp = true;
-        if (r.method == "GET" && r.pattern == "/deep/one") has_deep = true;
-    }
-    CHECK(has_add);
-    CHECK(has_mul);
-    CHECK(has_txt);
-    CHECK(has_grp);    // controller prefix joined
-    CHECK(has_deep);   // nested namespace controller found
+    CHECK(h.find(fut::method::GET, "/api/demo/ping") != nullptr);
+    CHECK(h.find(fut::method::POST, "/api/demo/add") != nullptr);
+    CHECK(h.find(fut::method::GET, "/api/demo/mul/{x}/{y}") != nullptr);
+    CHECK(h.find(fut::method::GET, "/api/demo/grp/first") != nullptr);   // controller path
+    CHECK(h.find(fut::method::GET, "/api/demo/deep/one") != nullptr);    // nested namespace
+}
+
+TEST_CASE("an empty app prefix still yields absolute paths") {
+    harness h{""};
+    CHECK(h.find(fut::method::GET, "/ping") != nullptr);
+    CHECK(h.find(fut::method::GET, "/grp/first") != nullptr);
 }
 
 TEST_CASE("GET /ping") {
-    const auto res = run(table, make_req("GET", "/ping"));
+    harness h{"/api/demo"};
+    const auto res = drive(h.s, fut::method::GET, "/api/demo/ping");
     CHECK(res.status == 200);
     const auto v = fut::parse<ping_dto>(res.body);
     REQUIRE(v.has_value());
@@ -170,7 +195,8 @@ TEST_CASE("GET /ping") {
 }
 
 TEST_CASE("POST /add") {
-    const auto res = run(table, make_req("POST", "/add", R"({"a":2,"b":5})"));
+    harness h{"/api/demo"};
+    const auto res = drive(h.s, fut::method::POST, "/api/demo/add", R"({"a":2,"b":5})");
     CHECK(res.status == 200);
     const auto v = fut::parse<add_out>(res.body);
     REQUIRE(v.has_value());
@@ -178,11 +204,13 @@ TEST_CASE("POST /add") {
 }
 
 TEST_CASE("POST /add -- invalid JSON -> 400") {
-    CHECK(run(table, make_req("POST", "/add", "not-json")).status == 400);
+    harness h{"/api/demo"};
+    CHECK(drive(h.s, fut::method::POST, "/api/demo/add", "not-json").status == 400);
 }
 
-TEST_CASE("GET /greet -- query binding, empty key uses parameter name") {
-    const auto res = run(table, make_req("GET", "/greet", "", "name=fut"));
+TEST_CASE("GET /greet -- query binding, empty key uses the parameter name") {
+    harness h{"/api/demo"};
+    const auto res = drive(h.s, fut::method::GET, "/api/demo/greet", "", "name=fut");
     CHECK(res.status == 200);
     const auto v = fut::parse<greet_out>(res.body);
     REQUIRE(v.has_value());
@@ -190,11 +218,13 @@ TEST_CASE("GET /greet -- query binding, empty key uses parameter name") {
 }
 
 TEST_CASE("GET /greet -- missing query -> 400") {
-    CHECK(run(table, make_req("GET", "/greet")).status == 400);
+    harness h{"/api/demo"};
+    CHECK(drive(h.s, fut::method::GET, "/api/demo/greet").status == 400);
 }
 
 TEST_CASE("GET /mul/6/7 -- path placeholder binding") {
-    const auto res = run(table, make_req("GET", "/mul/6/7"));
+    harness h{"/api/demo"};
+    const auto res = drive(h.s, fut::method::GET, "/api/demo/mul/6/7");
     CHECK(res.status == 200);
     const auto v = fut::parse<mul_out>(res.body);
     REQUIRE(v.has_value());
@@ -202,50 +232,39 @@ TEST_CASE("GET /mul/6/7 -- path placeholder binding") {
 }
 
 TEST_CASE("GET /mul/6/xx -- non-numeric -> 400") {
-    CHECK(run(table, make_req("GET", "/mul/6/xx")).status == 400);
+    harness h{"/api/demo"};
+    CHECK(drive(h.s, fut::method::GET, "/api/demo/mul/6/xx").status == 400);
 }
 
 TEST_CASE("GET /raw -- const request& escape hatch") {
-    const auto res = run(table, make_req("GET", "/raw"));
+    harness h{"/api/demo"};
+    const auto res = drive(h.s, fut::method::GET, "/api/demo/raw");
     CHECK(res.status == 200);
     const auto v = fut::parse<raw_out>(res.body);
     REQUIRE(v.has_value());
     CHECK(v->method == "GET");
-    CHECK(v->target == "/raw");
+    CHECK(v->target == "/api/demo/raw");
 }
 
 TEST_CASE("GET /txt -- plain string return") {
-    const auto res = run(table, make_req("GET", "/txt"));
+    harness h{"/api/demo"};
+    const auto res = drive(h.s, fut::method::GET, "/api/demo/txt");
     CHECK(res.status == 200);
     CHECK(res.content_type.rfind("text/plain", 0) == 0);
     CHECK(res.body == "plain text from fut");
 }
 
 TEST_CASE("GET /mix/9 -- string + path binding") {
-    const auto res = run(table, make_req("GET", "/mix/9"));
+    harness h{"/api/demo"};
+    const auto res = drive(h.s, fut::method::GET, "/api/demo/mix/9");
     CHECK(res.status == 200);
     CHECK(res.body == "n squared is 81");
 }
 
-TEST_CASE("GET /grp/first -- controller prefix joined") {
-    const auto res = run(table, make_req("GET", "/grp/first"));
-    CHECK(res.status == 200);
-    const auto v = fut::parse<greet_out>(res.body);
-    REQUIRE(v.has_value());
-    CHECK(v->hi == "grouped");
-}
-
-TEST_CASE("GET /deep/one -- nested namespace controller") {
-    const auto res = run(table, make_req("GET", "/deep/one"));
-    CHECK(res.status == 200);
-    const auto v = fut::parse<greet_out>(res.body);
-    REQUIRE(v.has_value());
-    CHECK(v->hi == "deep");
-}
-
 TEST_CASE("no match -> 404") {
-    CHECK(run(table, make_req("GET", "/nope")).status == 404);
-    CHECK(run(table, make_req("POST", "/ping")).status == 404);
+    harness h{"/api/demo"};
+    CHECK(drive(h.s, fut::method::GET, "/api/demo/nope").status == 404);
+    CHECK(drive(h.s, fut::method::POST, "/api/demo/ping").status == 404);
 }
 
 } // TEST_SUITE

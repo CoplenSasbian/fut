@@ -1,5 +1,6 @@
 #include "server.hpp"
 
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -28,7 +29,7 @@ void log_exception(std::exception_ptr ep) {
     }
 }
 
-asio::awaitable<void> run_session(beast::tcp_stream stream, router rt,
+asio::awaitable<void> run_session(beast::tcp_stream stream, router* rt,
                                   std::chrono::seconds timeout) {
     beast::flat_buffer buf;
     for (;;) {
@@ -47,28 +48,27 @@ asio::awaitable<void> run_session(beast::tcp_stream stream, router rt,
         hdrs.reserve(16);
         for (const auto& h : req.base()) hdrs.emplace_back(h.name_string(), h.value());
 
-        fut::response res;
+        const std::string_view target = req.target();
+        const auto qpos = target.find('?');
+        const std::string_view path =
+            (qpos == std::string_view::npos) ? target : target.substr(0, qpos);
+        const std::string_view query =
+            (qpos == std::string_view::npos) ? std::string_view{} : target.substr(qpos + 1);
         const std::string_view method = req.method_string();
-        const router::match m = rt.route(req.target());
-        if (!m.app) {
-            res = fut::error(404, "no route");
-        } else {
-            bool found = false;
-            for (const fut::route_record& r : m.app->entries()) {
-                if (r.method != method) continue;
-                fut::path_match pm;
-                if (!fut::match_pattern(r.pattern, m.rel_path, pm)) continue;
-                found = true;
-                try {
-                    res = co_await r.invoke(fut::request{
-                        method, req.target(), m.rel_path, m.query,
-                        req.body(), hdrs}, pm);
-                } catch (const fut::bind_error& e) {
-                    res = fut::error(400, e.what());
-                }
-                break;
+
+        fut::response res;
+        const auto m = fut::method_from_string(method);
+        if (!m) {
+            res = fut::error(405, "method not allowed");
+        } else if (auto hit = rt->match(*m, path)) {
+            try {
+                res = co_await hit->route->invoke(
+                    fut::request{method, target, path, query, req.body(), hdrs}, hit->params);
+            } catch (const fut::bind_error& e) {
+                res = fut::error(400, e.what());
             }
-            if (!found) res = fut::error(404, "no route");
+        } else {
+            res = fut::error(404, "no route");
         }
 
         http::response<http::string_body> out;
@@ -92,12 +92,12 @@ asio::awaitable<void> run_session(beast::tcp_stream stream, router rt,
 } // namespace
 
 server::server(asio::io_context& ioc, std::string host, unsigned short port,
-               router rt, std::chrono::seconds timeout)
+               router& rt, std::chrono::seconds timeout)
     : ioc_(ioc),
       host_(std::move(host)),
       port_(port),
       acceptor_(ioc),
-      router_(std::move(rt)),
+      router_(rt),
       timeout_(timeout) {}
 
 asio::awaitable<void> server::listen() {
@@ -116,7 +116,7 @@ asio::awaitable<void> server::listen() {
             continue;
         }
         asio::co_spawn(ioc_,
-                       run_session(beast::tcp_stream(std::move(sock)), router_, timeout_),
+                       run_session(beast::tcp_stream(std::move(sock)), &router_, timeout_),
                        log_exception);
     }
 }

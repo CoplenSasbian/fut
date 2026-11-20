@@ -2,33 +2,47 @@
 
 namespace fut::exec {
 
-router::match router::route(std::string_view target) const {
-    const auto qpos = target.find('?');
-    const std::string_view path =
-        (qpos == std::string_view::npos) ? target : target.substr(0, qpos);
-    const std::string_view query =
-        (qpos == std::string_view::npos) ? std::string_view{} : target.substr(qpos + 1);
-
-    match best;
-    std::size_t best_len = 0;
-    for (const fut::app_table* t : apps_) {
-        const std::string_view prefix = t->prefix;
-        if (prefix.empty() || prefix.front() != '/') continue;
-
-        const bool exact = (path == prefix);
-        const bool deeper = path.size() > prefix.size()
-                            && path.compare(0, prefix.size(), prefix) == 0
-                            && path[prefix.size()] == '/';
-        if (!exact && !deeper) continue;
-        if (prefix.size() < best_len) continue;  // keep the longest (most specific) prefix
-
-        best.app = t;
-        best_len = prefix.size();
-        best.query = query;
-        best.rel_path = exact ? std::string_view{"/"} : path.substr(prefix.size());
-        if (best.rel_path.empty()) best.rel_path = std::string_view{"/"};
+void router::add_route(fut::method m, std::string_view pattern, fut::http::route_fn fn) {
+    entry e;
+    e.method = m;
+    e.pattern.assign(pattern);
+    e.invoke = fn;
+    if (current_app_ < apps_.size()) {
+        e.app = apps_[current_app_].name;
+        ++apps_[current_app_].routes;
     }
-    return best;
+    entries_.push_back(std::move(e));
+}
+
+void router::add_route_thunk(void* self, fut::method m, std::string_view pattern,
+                             fut::http::route_fn fn) {
+    static_cast<router*>(self)->add_route(m, pattern, fn);
+}
+
+void router::begin_app(std::string_view name, std::string_view prefix) {
+    apps_.push_back(app_info{std::string(name), std::string(prefix), 0});
+    current_app_ = apps_.size() - 1;
+}
+
+void router::end_app() { current_app_ = npos; }
+
+std::optional<router::hit> router::match(fut::method m, std::string_view path) const {
+    const entry* best = nullptr;
+    fut::path_match best_pm{};
+    std::size_t best_score = 0;
+    for (const entry& e : entries_) {
+        if (e.method != m) continue;
+        fut::path_match pm;
+        if (!fut::match_pattern(e.pattern, path, pm)) continue;
+        const std::size_t score = fut::literal_segments(e.pattern);
+        if (!best || score > best_score) {
+            best = &e;
+            best_pm = pm;
+            best_score = score;
+        }
+    }
+    if (!best) return std::nullopt;
+    return hit{best, best_pm};
 }
 
 } // namespace fut::exec

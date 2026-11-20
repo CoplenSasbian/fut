@@ -18,6 +18,18 @@
 #     #include <header 2>
 #     FUT_EXPORT_APP_NS(FUT_APP_NAME, FUT_APP_PREFIX, ^^<name>)
 #
+# FUT_EXPORT_APP_NS emits the DLL's only entry point:
+#
+#     extern "C" void fut_app_register(fut::fut_ctx* ctx) {
+#         fut::scan::run<^^<name>>(ctx, FUT_APP_PREFIX);
+#     }
+#
+# The prefix from add_app() reaches every route as the FUT_APP_PREFIX
+# compile definition, so the DLL composes its own paths and the executable
+# never learns the prefix at build time. The scanner hands each
+# controller-annotated class to that annotation's operation(), which calls
+# router_module::add_route() -- obtained from the context, not linked.
+#
 # The generated unit is the ONLY place scanning code exists. Sources split
 # by extension:
 #   * headers (.hpp/.h) are #include'd into the generated unit, so the scan
@@ -40,7 +52,8 @@
 #
 # The name and prefix live in exactly one place -- the add_app() call. The
 # generated unit consumes them through the FUT_APP_NAME / FUT_APP_PREFIX
-# compile definitions, so the C++ side can never drift out of sync.
+# compile definitions, so the C++ side can never drift out of sync: the
+# prefix is what the controller registration composes into every route.
 #
 # Conventions enforced here:
 #   * the prefix must be an absolute path segment and not end in '/' --

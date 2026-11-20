@@ -6,90 +6,90 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <boost/asio.hpp>
-#include <fut/json.hpp>
+
 #include <fut/http/route.hpp>
+#include <fut/json.hpp>
 
 #include "app_loader.hpp"
+#include "router.hpp"
 
 namespace asio = boost::asio;
 
 namespace {
 
-// Dispatches a request against a loaded app table exactly like the server.
-asio::awaitable<fut::response> call_table(const fut::app_table& t, fut::request req) {
-    for (const fut::route_record& r : t.entries()) {
-        if (r.method != req.method) continue;
-        fut::path_match pm;
-        if (!fut::match_pattern(r.pattern, req.path, pm)) continue;
-        try {
-            co_return co_await r.invoke(req, pm);
-        } catch (const fut::bind_error& e) {
-            co_return fut::error(400, e.what());
-        }
-    }
-    co_return fut::error(404, "no route");
-}
-
-struct run_result {
+struct run_state {
     fut::response res{};
     std::exception_ptr err{};
 };
 
-asio::awaitable<void> drive(run_result& rr, const fut::app_table* t, fut::request req) {
-    rr.res = co_await call_table(*t, std::move(req));
+asio::awaitable<void> invoke_into(run_state& st, fut::http::route_fn fn, fut::request req,
+                                  fut::path_match pm) {
+    try {
+        st.res = co_await fn(req, pm);
+    } catch (...) {
+        st.err = std::current_exception();
+    }
 }
 
-fut::response run(const fut::app_table& t, fut::request req) {
+// Dispatches exactly like the server: router match, then invoke.
+fut::response run(fut::exec::router& rt, fut::method m, std::string_view path,
+                  std::string_view body = {}, std::string_view query = {}) {
+    const auto hit = rt.match(m, path);
+    if (!hit) return fut::error(404, "no route");
+
     asio::io_context ioc;
-    run_result rr;
-    asio::co_spawn(ioc, drive(rr, &t, std::move(req)),
-                   [&rr](std::exception_ptr e) { rr.err = e; });
+    run_state st;
+    asio::co_spawn(ioc,
+                   invoke_into(st, hit->route->invoke,
+                               fut::request{fut::to_string(m), path, path, query, body, {}},
+                               hit->params),
+                   [](std::exception_ptr) {});
     ioc.run();
-    if (rr.err) std::rethrow_exception(rr.err);
-    return rr.res;
+    if (st.err) {
+        try {
+            std::rethrow_exception(st.err);
+        } catch (const fut::bind_error& e) {
+            return fut::error(400, e.what());
+        }
+    }
+    return st.res;
 }
 
-fut::request make_req(std::string_view method, std::string_view path,
-                      std::string_view body = {}, std::string_view query = {}) {
-    fut::request r;
-    r.method = method;
-    r.target = path;
-    r.path = path;
-    r.body = body;
-    r.query = query;
-    return r;
+const fut::exec::app_loader::entry* find_app(
+    const std::vector<fut::exec::app_loader::entry>& apps, std::string_view name) {
+    for (const auto& a : apps)
+        if (a.name == name) return &a;
+    return nullptr;
 }
 
 } // namespace
 
 TEST_SUITE("app DLL end-to-end") {
 
-TEST_CASE("load fut_app_admin / fut_app_web and drive their tables") {
+TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
     const char* dir = std::getenv("FUT_APPS_DIR");
     REQUIRE(dir != nullptr);
 
+    fut::exec::router rt;
     fut::exec::app_loader loader;
-    const auto apps = loader.load_dir(dir);
+    const auto apps = loader.load_dir(dir, rt);
     REQUIRE(apps.size() == 2);
 
-    const fut::app_table* admin = nullptr;
-    const fut::app_table* web = nullptr;
-    for (const auto& e : apps) {
-        if (e.table->name == "admin") admin = e.table;
-        if (e.table->name == "web") web = e.table;
-    }
+    const auto* admin = find_app(apps, "admin");
+    const auto* web = find_app(apps, "web");
     REQUIRE(admin != nullptr);
     REQUIRE(web != nullptr);
     CHECK(admin->prefix == "/api/admin");
     CHECK(web->prefix == "/api/web");
-    CHECK(admin->route_count == 8);  // 6 flat actions + 2 inside users_controller
-    CHECK(web->route_count == 7);    // 6 flat actions + 1 inside namespace web::beta
+    CHECK(admin->routes == 8);  // 6 flat + 2 inside users_controller
+    CHECK(web->routes == 7);    // 6 flat + 1 inside web::beta
 
     SUBCASE("admin /ping") {
         struct pong { bool pong{}; std::string app{}; };
-        const auto res = run(*admin, make_req("GET", "/ping"));
+        const auto res = run(rt, fut::method::GET, "/api/admin/ping");
         CHECK(res.status == 200);
         const auto v = fut::parse<pong>(res.body);
         REQUIRE(v.has_value());
@@ -99,7 +99,8 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their tables") {
 
     SUBCASE("admin /echo -- body roundtrip") {
         struct echo_out { std::string message{}; int doubled{}; long long sum{}; };
-        const auto res = run(*admin, make_req("POST", "/echo", R"({"message":"hi","count":4})"));
+        const auto res =
+            run(rt, fut::method::POST, "/api/admin/echo", R"({"message":"hi","count":4})");
         CHECK(res.status == 200);
         const auto v = fut::parse<echo_out>(res.body);
         REQUIRE(v.has_value());
@@ -109,13 +110,13 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their tables") {
     }
 
     SUBCASE("admin /echo -- invalid JSON -> 400") {
-        CHECK(run(*admin, make_req("POST", "/echo", "not-json")).status == 400);
+        CHECK(run(rt, fut::method::POST, "/api/admin/echo", "not-json").status == 400);
     }
 
     SUBCASE("admin /meta -- C++26 std::meta member enumeration") {
         struct member_row { std::string name{}; std::string value_kind{}; };
         struct meta_dto { std::vector<member_row> members{}; std::vector<std::string> names{}; };
-        const auto res = run(*admin, make_req("GET", "/meta"));
+        const auto res = run(rt, fut::method::GET, "/api/admin/meta");
         CHECK(res.status == 200);
         const auto v = fut::parse<meta_dto>(res.body);
         REQUIRE(v.has_value());
@@ -133,7 +134,7 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their tables") {
 
     SUBCASE("admin /whoami -- DTO return auto-serialization") {
         struct who { std::string app{}; std::string user{}; };
-        const auto res = run(*admin, make_req("GET", "/whoami"));
+        const auto res = run(rt, fut::method::GET, "/api/admin/whoami");
         CHECK(res.status == 200);
         const auto v = fut::parse<who>(res.body);
         REQUIRE(v.has_value());
@@ -142,15 +143,38 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their tables") {
     }
 
     SUBCASE("admin /raw -- string action served as text/plain") {
-        const auto res = run(*admin, make_req("GET", "/raw"));
+        const auto res = run(rt, fut::method::GET, "/api/admin/raw");
         CHECK(res.status == 200);
         CHECK(res.content_type.rfind("text/plain", 0) == 0);
         CHECK(res.body.find("fut admin app") == 0);
     }
 
+    SUBCASE("admin /users/hits -- controller instance state") {
+        struct hits_out { std::uint64_t hits{}; };
+        const auto r1 = run(rt, fut::method::GET, "/api/admin/users/hits");
+        CHECK(r1.status == 200);
+        const auto v1 = fut::parse<hits_out>(r1.body);
+        REQUIRE(v1.has_value());
+        const auto r2 = run(rt, fut::method::GET, "/api/admin/users/hits");
+        const auto v2 = fut::parse<hits_out>(r2.body);
+        REQUIRE(v2.has_value());
+        // one instance per DLL: the counter advances between calls
+        CHECK(v2->hits == v1->hits + 1);
+    }
+
+    SUBCASE("admin /users/7/name -- controller path + placeholder") {
+        struct name_out { long long id{}; std::string name{}; };
+        const auto res = run(rt, fut::method::GET, "/api/admin/users/7/name");
+        CHECK(res.status == 200);
+        const auto v = fut::parse<name_out>(res.body);
+        REQUIRE(v.has_value());
+        CHECK(v->id == 7);
+        CHECK(v->name == "user-7");
+    }
+
     SUBCASE("web /hello?name=fut -- query binding") {
         struct hello { std::string hello{}; };
-        const auto res = run(*web, make_req("GET", "/hello", "", "name=fut"));
+        const auto res = run(rt, fut::method::GET, "/api/web/hello", "", "name=fut");
         CHECK(res.status == 200);
         const auto v = fut::parse<hello>(res.body);
         REQUIRE(v.has_value());
@@ -159,7 +183,8 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their tables") {
 
     SUBCASE("web /calc -- body DTO binding") {
         struct calc_out { double result{}; std::string op{}; };
-        const auto res = run(*web, make_req("POST", "/calc", R"({"a":6,"b":7,"op":"mul"})"));
+        const auto res =
+            run(rt, fut::method::POST, "/api/web/calc", R"({"a":6,"b":7,"op":"mul"})");
         CHECK(res.status == 200);
         const auto v = fut::parse<calc_out>(res.body);
         REQUIRE(v.has_value());
@@ -168,58 +193,36 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their tables") {
     }
 
     SUBCASE("web /calc -- division by zero -> 400") {
-        CHECK(run(*web, make_req("POST", "/calc", R"({"a":6,"b":0,"op":"div"})")).status == 400);
+        CHECK(run(rt, fut::method::POST, "/api/web/calc", R"({"a":6,"b":0,"op":"div"})").status ==
+              400);
     }
 
     SUBCASE("web /sum/6/7 -- path placeholder binding") {
         struct sum_out { long long a{}; long long b{}; long long sum{}; };
-        const auto res = run(*web, make_req("GET", "/sum/6/7"));
+        const auto res = run(rt, fut::method::GET, "/api/web/sum/6/7");
         CHECK(res.status == 200);
         const auto v = fut::parse<sum_out>(res.body);
         REQUIRE(v.has_value());
         CHECK(v->sum == 13);
     }
 
-    SUBCASE("admin /users/hits -- controller instance state") {
-        struct hits_out { std::uint64_t hits{}; };
-        const auto r1 = run(*admin, make_req("GET", "/users/hits"));
-        CHECK(r1.status == 200);
-        const auto v1 = fut::parse<hits_out>(r1.body);
-        REQUIRE(v1.has_value());
-        const auto r2 = run(*admin, make_req("GET", "/users/hits"));
-        const auto v2 = fut::parse<hits_out>(r2.body);
-        REQUIRE(v2.has_value());
-        // one instance per DLL: the counter advances between calls
-        CHECK(v2->hits == v1->hits + 1);
-    }
-
-    SUBCASE("admin /users/7/name -- controller prefix + path placeholder") {
-        struct name_out { long long id{}; std::string name{}; };
-        const auto res = run(*admin, make_req("GET", "/users/7/name"));
-        CHECK(res.status == 200);
-        const auto v = fut::parse<name_out>(res.body);
-        REQUIRE(v.has_value());
-        CHECK(v->id == 7);
-        CHECK(v->name == "user-7");
-    }
-
     SUBCASE("web /note -- string action") {
-        const auto res = run(*web, make_req("GET", "/note"));
+        const auto res = run(rt, fut::method::GET, "/api/web/note");
         CHECK(res.status == 200);
         CHECK(res.content_type.rfind("text/plain", 0) == 0);
         CHECK(res.body.find("fut web app") == 0);
     }
 
-    SUBCASE("web /beta/note -- action in a nested namespace") {
-        const auto res = run(*web, make_req("GET", "/beta/note"));
+    SUBCASE("web /beta/note -- controller in a nested namespace") {
+        const auto res = run(rt, fut::method::GET, "/api/web/beta/note");
         CHECK(res.status == 200);
         CHECK(res.content_type.rfind("text/plain", 0) == 0);
         CHECK(res.body == "from namespace web::beta");
     }
 
     SUBCASE("unknown route -> 404") {
-        CHECK(run(*admin, make_req("GET", "/nope")).status == 404);
-        CHECK(run(*web, make_req("GET", "/nope")).status == 404);
+        CHECK(run(rt, fut::method::GET, "/api/admin/nope").status == 404);
+        CHECK(run(rt, fut::method::GET, "/api/web/nope").status == 404);
     }
 }
 

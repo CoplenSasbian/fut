@@ -1,6 +1,7 @@
 #pragma once
 
-// TCP listener: spawns one session coroutine per connection.
+// TCP listener: spawns one session coroutine per connection and dispatches
+// requests against the router's registered routes.
 
 #include <chrono>
 #include <string>
@@ -15,7 +16,7 @@ namespace fut::exec {
 class server {
 public:
     server(boost::asio::io_context& ioc, std::string host, unsigned short port,
-           router rt, std::chrono::seconds timeout);
+           router& rt, std::chrono::seconds timeout);
 
     boost::asio::awaitable<void> listen();
 
@@ -24,7 +25,7 @@ private:
     std::string host_;
     unsigned short port_;
     boost::asio::ip::tcp::acceptor acceptor_;
-    router router_;
+    router& router_;
     std::chrono::seconds timeout_;
 };
 

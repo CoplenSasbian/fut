@@ -12,7 +12,7 @@ target_include_directories(test_log PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(test_log PRIVATE doctest::doctest glaze::glaze)
 doctest_discover_tests(test_log)
 
-# Prefix routing (pure logic)
+# Route registry: registration, matching, specificity
 add_executable(test_router test_router.cpp ${PROJECT_SOURCE_DIR}/src/exec/router.cpp)
 target_include_directories(test_router PRIVATE
     ${PROJECT_SOURCE_DIR}/include
@@ -27,7 +27,7 @@ target_include_directories(test_reflect PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(test_reflect PRIVATE doctest::doctest)
 doctest_discover_tests(test_reflect)
 
-# C++26 annotation router: compile-time tables + every binding style
+# C++26 scanner + controller registration + every binding style
 add_executable(test_reflect_router test_reflect_router.cpp)
 target_include_directories(test_reflect_router PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(test_reflect_router PRIVATE doctest::doctest Boost::asio glaze::glaze)
@@ -36,8 +36,10 @@ if(WIN32)
 endif()
 doctest_discover_tests(test_reflect_router)
 
-# End-to-end: app_loader loads fut_app_admin / fut_app_web and drives their tables
+# End-to-end: app_loader loads fut_app_admin / fut_app_web, they register into
+# the router through fut_ctx, and their routes are driven like the server does.
 add_executable(test_apps test_apps.cpp ${PROJECT_SOURCE_DIR}/src/exec/app_loader.cpp
+                              ${PROJECT_SOURCE_DIR}/src/exec/router.cpp
                               ${PROJECT_SOURCE_DIR}/src/exec/log.cpp)
 target_include_directories(test_apps PRIVATE
     ${PROJECT_SOURCE_DIR}/include

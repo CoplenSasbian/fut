@@ -2,21 +2,29 @@
 
 // fut/scannable.hpp -- the global scan contract.
 //
-// "The scanner sees me and calls my operation()."
+// An annotation derives this when it has work to do at scan time:
 //
-// Any annotation with namespace-level work derives from this: the scanner
-// walks a namespace, finds entities carrying scannable-derived annotations,
-// and passes the entity's std::meta::info to the annotation's operation().
-// What operation() does is entirely the annotation's business.
+//     struct my_annotation : fut::scannable {
+//         template <std::meta::info Entity>
+//         static void operation(fut::fut_ctx* ctx, std::string_view prefix);
+//     };
 //
-// Today fut::controller derives scannable (produces routes from a class).
-// A future middleware, config injector, or anything with namespace-level
-// behavior would also derive scannable -- without touching any scanner.
+// A scanner walks a namespace and, for every CLASS TYPE carrying a
+// scannable-derived annotation, calls that annotation's operation<Entity>(),
+// passing the entity it was found on, the context, and the app prefix (the
+// add_app() prefix, injected as the FUT_APP_PREFIX compile definition).
+// The scanner knows nothing about what operation() does -- routes, config,
+// code generation, anything.
 //
-// This file has zero dependencies. Include it from anywhere.
+// fut::controller (fut/http/annotate.hpp) is the built-in implementation:
+// it reads the verb annotations off the class's member functions and
+// registers routes with the router module.
 
 #include <cstddef>
+#include <meta>
 #include <string_view>
+
+#include <fut/ctx.hpp>
 
 namespace fut {
 
