@@ -290,8 +290,10 @@ constexpr ::fut::app_table make_app_table(std::string_view name, std::string_vie
 // Actions live in the namespace named after the app; every function carrying
 // one of the verb annotations is discovered automatically -- and the scan is
 // recursive, so nested namespaces are descended into and an app can group its
-// actions freely. GCC 16.2 supports members_of() over namespaces (including
-// nested ones as members), which is what makes this work.
+// actions freely. Annotated controller classes (see the controllers section
+// below) in the same namespace contribute their member routes to the same
+// table. GCC 16.2 supports members_of() over namespaces (including nested
+// ones as members), which is what makes this work.
 //
 //     namespace admin {
 //         [[=fut::http_get("/ping")]] asio::awaitable<pong_dto> ping() { ... }
@@ -302,47 +304,178 @@ constexpr ::fut::app_table make_app_table(std::string_view name, std::string_vie
 //     FUT_EXPORT_APP_NS("admin", "/api/admin", ^^admin)
 // ---------------------------------------------------------------------------
 
-// Recursive scan: an app's actions live in the namespace named after the app
-// (the add_app() name argument); nested namespaces are descended into, so
-// an app can group its actions (e.g. namespace admin { namespace reports { ... } }).
+// ---------------------------------------------------------------------------
+// controllers
+//
+// A controller is a class annotated with [[=fut::controller("/base")]]
+// (annotation AFTER the struct keyword, the standard class-head position).
+// Its annotated member functions become routes whose pattern is the class
+// path joined with the method path. One instance per controller type is
+// constructed lazily on first use (a thread-safe magic static held by the
+// DLL), so actions can carry state: pools, caches, counters.
+//
+//     struct [[=fut::controller("/users")]] users_controller {
+//         std::atomic<std::uint64_t> hits_{0};
+//         [[=fut::http_get("/hits")]]
+//         asio::awaitable<hits_out> hits() { co_return hits_out{++hits_}; }
+//     };
+//
+// Free actions and controllers can be mixed freely inside one app namespace.
+// ---------------------------------------------------------------------------
+
+consteval bool is_controller_type(meta::info m) {
+    return meta::is_type(m) && meta::is_class_type(m) &&
+           !meta::annotations_of_with_type(m, ^^fut::controller).empty();
+}
+
+consteval std::size_t ctrl_route_count(meta::info t) {
+    std::size_t n = 0;
+    for (auto m : meta::members_of(t, meta::access_context::unchecked()))
+        if (meta::is_class_member(m) && is_route_function(m)) ++n;
+    return n;
+}
+
+consteval meta::info ctrl_nth_route(meta::info t, std::size_t idx) {
+    std::size_t seen = 0;
+    for (auto m : meta::members_of(t, meta::access_context::unchecked())) {
+        if (!meta::is_class_member(m) || !is_route_function(m)) continue;
+        if (seen == idx) return m;
+        ++seen;
+    }
+    return meta::info{};
+}
+
+// One instance per controller type, constructed on first use.
+template <class T>
+T& controller_instance() {
+    static T instance;
+    return instance;
+}
+
+// Pattern of a controller method: class path joined with the method path.
+// define_static_string gives the joined text static storage duration.
+template <meta::info Owner, meta::info Fn>
+consteval std::string_view controller_pattern() {
+    constexpr auto anns = copy_anns<1>(Owner, ^^fut::controller);
+    constexpr std::string_view base = [: meta::constant_of(anns[0]) :].path.view();
+    constexpr std::string_view sub = route_pattern<Fn>();
+    std::string joined{base};
+    joined += sub;
+    return {std::define_static_string(joined), joined.size()};
+}
+
+template <class T, meta::info M, std::size_t... P>
+boost::asio::awaitable<::fut::response> invoke_member_impl(
+    const ::fut::request& req, const ::fut::path_match& pm, std::index_sequence<P...>) {
+    using Raw = [: meta::return_type_of(M) :];
+    static_assert(is_awaitable_v<Raw>,
+                  "fut: a controller action must return asio::awaitable<T>");
+    using Val = await_value_t<Raw>;
+
+    auto& self = controller_instance<T>();
+    if constexpr (std::is_same_v<Val, ::fut::response>) {
+        co_return co_await (self.[: M :])(make_arg<M, P>(req, pm)...);
+    }
+    else if constexpr (std::is_same_v<Val, std::string>) {
+        // plain string -> response body as-is
+        std::string body = co_await (self.[: M :])(make_arg<M, P>(req, pm)...);
+        ::fut::response r;
+        r.status = 200;
+        r.content_type = "text/plain; charset=utf-8";
+        r.body = std::move(body);
+        co_return r;
+    }
+    else if constexpr (requires {
+                           glz::write_json(std::declval<Val&>(), std::declval<std::string&>());
+                       }) {
+        // glaze-serializable DTO -> JSON
+        co_return ::fut::json(co_await (self.[: M :])(make_arg<M, P>(req, pm)...));
+    }
+    else {
+        static_assert(!sizeof(Val),
+                      "fut: unsupported controller action return type -- expected "
+                      "awaitable<fut::response>, awaitable<std::string>, or "
+                      "awaitable<DTO> with a glaze-serializable DTO");
+    }
+}
+
+template <meta::info Owner, meta::info M>
+boost::asio::awaitable<::fut::response> invoke_member_route(const ::fut::request& req,
+                                                           const ::fut::path_match& pm) {
+    // a splice used as a template argument must be aliased to a type first
+    using CtrlT = [: Owner :];
+    constexpr std::size_t n = param_count<M>();
+    return invoke_member_impl<CtrlT, M>(req, pm, std::make_index_sequence<n>{});
+}
+
+// ---------------------------------------------------------------------------
+// recursive namespace scan (free actions + controllers, one index space)
+// ---------------------------------------------------------------------------
+
+// A located route: fn is the function's reflection; owner is the controller
+// type's reflection for member routes, null info for free functions.
+struct route_location {
+    meta::info fn{};
+    meta::info owner{};
+};
+
 consteval std::size_t ns_scan_count(meta::info ns) {
     std::size_t n = 0;
     for (auto m : meta::members_of(ns, meta::access_context::unchecked())) {
         if (is_route_function(m)) ++n;
+        else if (is_controller_type(m)) n += ctrl_route_count(m);
         else if (meta::is_namespace(m)) n += ns_scan_count(m);
     }
     return n;
 }
 
-consteval meta::info ns_scan_nth(meta::info ns, std::size_t idx) {
+consteval route_location ns_scan_locate(meta::info ns, std::size_t idx) {
     for (auto m : meta::members_of(ns, meta::access_context::unchecked())) {
         if (is_route_function(m)) {
-            if (idx == 0) return m;
+            if (idx == 0) return route_location{m, meta::info{}};
             --idx;
+        } else if (is_controller_type(m)) {
+            const std::size_t sub = ctrl_route_count(m);
+            if (idx < sub) return route_location{ctrl_nth_route(m, idx), m};
+            idx -= sub;
         } else if (meta::is_namespace(m)) {
             const std::size_t sub = ns_scan_count(m);
-            if (idx < sub) return ns_scan_nth(m, idx);
+            if (idx < sub) return ns_scan_locate(m, idx);
             idx -= sub;
         }
     }
-    return meta::info{};
+    return {};
 }
 
 template <meta::info Ns>
 consteval std::size_t ns_route_count() { return ns_scan_count(Ns); }
 
 template <meta::info Ns>
-consteval meta::info ns_nth_route(std::size_t idx) { return ns_scan_nth(Ns, idx); }
+consteval route_location ns_route_at(std::size_t idx) { return ns_scan_locate(Ns, idx); }
+
+template <meta::info Ns, std::size_t I>
+constexpr ::fut::route_record record_at() {
+    constexpr route_location loc = ns_route_at<Ns>(I);
+    // NOTE: "if constexpr" is mandatory -- GCC eagerly lowers splice
+    // expressions of all branches at instantiation.
+    if constexpr (loc.owner == meta::info{}) {
+        return ::fut::route_record{
+            route_method<loc.fn>(),
+            route_pattern<loc.fn>(),
+            &invoke_route<loc.fn>};
+    } else {
+        return ::fut::route_record{
+            route_method<loc.fn>(),
+            controller_pattern<loc.owner, loc.fn>(),
+            &invoke_member_route<loc.owner, loc.fn>};
+    }
+}
 
 template <meta::info Ns, std::size_t... I>
 constexpr std::array<::fut::route_record, sizeof...(I)> ns_records_impl(
     std::index_sequence<I...>) {
     std::array<::fut::route_record, sizeof...(I)> out{};
-    ((out[I] = ::fut::route_record{
-         route_method<ns_nth_route<Ns>(I)>(),
-         route_pattern<ns_nth_route<Ns>(I)>(),
-         &invoke_route<ns_nth_route<Ns>(I)>}),
-     ...);
+    ((out[I] = record_at<Ns, I>()), ...);
     return out;
 }
 
@@ -350,7 +483,7 @@ template <meta::info Ns>
 constexpr auto ns_records_v =
     ns_records_impl<Ns>(std::make_index_sequence<ns_route_count<Ns>()>{});
 
-// constexpr auto t = fut::refl::make_scanned_table<^^fut_actions>("admin", "/api/admin");
+// constexpr auto t = fut::refl::make_scanned_table<^^admin>("admin", "/api/admin");
 template <meta::info Ns>
 constexpr ::fut::app_table make_scanned_table(std::string_view name, std::string_view prefix) {
     static_assert(ns_route_count<Ns>() > 0,

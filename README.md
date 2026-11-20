@@ -204,7 +204,41 @@ Then reference the directory once from the top level (`add_subdirectory(apps/pay
 the server picks the DLL up by prefix on the next start. (Hand-rolled export lists remain
 available through `FUT_EXPORT_APP(name, prefix, ^^fn, ...)` for apps that prefer to be explicit.)
 
-### Parameter binding
+### Controllers
+
+When actions need **state** — a pool, a cache, a counter — or a shared route prefix, group them in a
+controller instead of free functions. A controller is a class annotated in the standard class-head
+position (AFTER the `struct` keyword); the scan finds it in the same namespace as free actions and
+contributes its member routes to the same table, with the class path joined onto every method path.
+One instance per controller type is created lazily per DLL (a thread-safe magic static), so state
+persists across requests.
+
+```cpp
+namespace admin {
+
+struct [[=fut::controller("/users")]] users_controller {
+    std::atomic<std::uint64_t> hits_{0};
+
+    [[=fut::http_get("/hits")]]                        // -> GET /api/admin/users/hits
+    asio::awaitable<hits_out> hits() {
+        co_return hits_out{hits_.fetch_add(1, std::memory_order_relaxed)};
+    }
+
+    [[=fut::http_get("/{id}/name")]]                   // -> GET /api/admin/users/{id}/name
+    asio::awaitable<user_name_out> name([[=fut::from_path("id")]] long long id) {
+        co_return user_name_out{id, "user-" + std::to_string(id)};
+    }
+};
+
+} // namespace admin
+```
+
+Rules: the annotation sits after the `struct` keyword (GCC requirement for class-head attributes);
+member actions must be public (the invoke splices through them); parameter binding and return-type
+adaptation are identical to free actions; free functions, nested namespaces and controllers can be
+mixed freely in one app namespace — the scan walks all of them into one table.
+
+## Parameter binding
 
 | Parameter annotation | Source |
 | --- | --- |

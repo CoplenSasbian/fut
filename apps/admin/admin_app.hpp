@@ -10,6 +10,7 @@
 // namespaces work too. The app name and prefix come from the add_app() call
 // as FUT_APP_NAME / FUT_APP_PREFIX -- nothing to keep in sync by hand.
 
+#include <atomic>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -60,6 +61,9 @@ struct whoami_dto {
     std::string user{"root"};
 };
 
+struct hits_out { std::uint64_t hits{}; };
+struct user_name_out { long long id{}; std::string name{}; };
+
 // ---- actions: annotations define routes, parameters bind themselves ----
 // The namespace is what the CMake-generated export unit scans with std::meta
 // reflection; every annotated function here becomes a route automatically.
@@ -109,5 +113,24 @@ inline asio::awaitable<whoami_dto> whoami() { co_return whoami_dto{}; }
 inline asio::awaitable<std::string> raw() {
     co_return "fut admin app -- C++26 reflection inside";
 }
+
+// ---- a controller: instance state + class-level route prefix ------------
+// The annotation goes AFTER the struct keyword. Its member routes compose
+// with the class path: "/users/hits", "/users/{id}/name". One instance per
+// DLL is created lazily, so the counter below persists across requests.
+
+struct [[=fut::controller("/users")]] users_controller {
+    std::atomic<std::uint64_t> hits_{0};
+
+    [[=fut::http_get("/hits")]]
+    asio::awaitable<hits_out> hits() {
+        co_return hits_out{hits_.fetch_add(1, std::memory_order_relaxed)};
+    }
+
+    [[=fut::http_get("/{id}/name")]]
+    asio::awaitable<user_name_out> name([[=fut::from_path("id")]] long long id) {
+        co_return user_name_out{id, "user-" + std::to_string(id)};
+    }
+};
 
 } // namespace admin

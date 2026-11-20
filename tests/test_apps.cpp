@@ -84,8 +84,8 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their tables") {
     REQUIRE(web != nullptr);
     CHECK(admin->prefix == "/api/admin");
     CHECK(web->prefix == "/api/web");
-    CHECK(admin->route_count == 6);
-    CHECK(web->route_count == 7);   // 6 flat actions + 1 inside namespace web::beta
+    CHECK(admin->route_count == 8);  // 6 flat actions + 2 inside users_controller
+    CHECK(web->route_count == 7);    // 6 flat actions + 1 inside namespace web::beta
 
     SUBCASE("admin /ping") {
         struct pong { bool pong{}; std::string app{}; };
@@ -178,6 +178,29 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their tables") {
         const auto v = fut::parse<sum_out>(res.body);
         REQUIRE(v.has_value());
         CHECK(v->sum == 13);
+    }
+
+    SUBCASE("admin /users/hits -- controller instance state") {
+        struct hits_out { std::uint64_t hits{}; };
+        const auto r1 = run(*admin, make_req("GET", "/users/hits"));
+        CHECK(r1.status == 200);
+        const auto v1 = fut::parse<hits_out>(r1.body);
+        REQUIRE(v1.has_value());
+        const auto r2 = run(*admin, make_req("GET", "/users/hits"));
+        const auto v2 = fut::parse<hits_out>(r2.body);
+        REQUIRE(v2.has_value());
+        // one instance per DLL: the counter advances between calls
+        CHECK(v2->hits == v1->hits + 1);
+    }
+
+    SUBCASE("admin /users/7/name -- controller prefix + path placeholder") {
+        struct name_out { long long id{}; std::string name{}; };
+        const auto res = run(*admin, make_req("GET", "/users/7/name"));
+        CHECK(res.status == 200);
+        const auto v = fut::parse<name_out>(res.body);
+        REQUIRE(v.has_value());
+        CHECK(v->id == 7);
+        CHECK(v->name == "user-7");
     }
 
     SUBCASE("web /note -- string action") {

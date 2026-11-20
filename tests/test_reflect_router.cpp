@@ -78,6 +78,12 @@ namespace nested {
 inline asio::awaitable<greet_out> scan_two() { co_return greet_out{"nested"}; }
 } // namespace nested
 
+// a controller in the same namespace: its methods join the same table
+struct [[=fut::controller("/grp")]] scan_controller {
+    [[=fut::http_get("/first")]]
+    asio::awaitable<greet_out> scan_ctrl() { co_return greet_out{"controller"}; }
+};
+
 } // namespace scan_demo
 
 constexpr auto scanned =
@@ -225,10 +231,18 @@ TEST_CASE("no match -> 404 (including method mismatch)") {
     CHECK(run(make_req("POST", "/ping")).status == 404);
 }
 
-TEST_CASE("namespace scan discovers flat and nested actions") {
-    REQUIRE(scanned.route_count == 2);
-    CHECK(scanned.entries()[0].pattern == "/one");
-    CHECK(scanned.entries()[1].pattern == "/two");
+TEST_CASE("namespace scan discovers flat, nested and controller routes") {
+    REQUIRE(scanned.route_count == 3);
+
+    bool has_one = false, has_two = false, has_ctrl = false;
+    for (const auto& r : scanned.entries()) {
+        if (r.pattern == "/one") has_one = true;
+        if (r.pattern == "/two") has_two = true;
+        if (r.pattern == "/grp/first") has_ctrl = true;   // controller prefix joined
+    }
+    CHECK(has_one);
+    CHECK(has_two);
+    CHECK(has_ctrl);
 
     const auto res1 = run(scanned, make_req("GET", "/one"));
     const auto v1 = fut::parse<greet_out>(res1.body);
@@ -239,6 +253,11 @@ TEST_CASE("namespace scan discovers flat and nested actions") {
     const auto v2 = fut::parse<greet_out>(res2.body);
     REQUIRE(v2.has_value());
     CHECK(v2->hi == "nested");
+
+    const auto res3 = run(scanned, make_req("GET", "/grp/first"));
+    const auto v3 = fut::parse<greet_out>(res3.body);
+    REQUIRE(v3.has_value());
+    CHECK(v3->hi == "controller");
 }
 
 } // TEST_SUITE

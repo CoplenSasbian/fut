@@ -60,6 +60,17 @@ struct http_post   : detail::verb_base<annot_path_max> { using verb_base::verb_b
 struct http_put    : detail::verb_base<annot_path_max> { using verb_base::verb_base; };
 struct http_delete : detail::verb_base<annot_path_max> { using verb_base::verb_base; };
 
+// ---- controller annotation (class-head position) ----
+// Placed AFTER the struct keyword; its member functions' route patterns are
+// joined onto this path. One instance per controller type is created lazily
+// per DLL, so members may carry state.
+//     struct [[=fut::controller("/users")]] users_controller { ... };
+struct controller {
+    detail::text_buf<annot_path_max> path;
+    constexpr controller() = default;
+    constexpr controller(std::string_view s) : path(s) {}
+};
+
 // ---- parameter binding annotations ----
 struct from_body {};
 
