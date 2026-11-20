@@ -77,16 +77,14 @@ curl http://127.0.0.1:8080/api/admin/raw                  # plain text, text/pla
 
 ## Writing an app
 
-An app is a Django-style unit: a name, a URL prefix, and a set of annotated free functions
-inside **the namespace named after the app**. No base classes, no action list, no export
-boilerplate — the CMake-generated export unit scans that namespace with std::meta reflection
-(**recursively**: nested namespaces are descended into, so actions can be grouped freely) and
-exports whatever carries a route annotation.
+An app is a Django-style unit: a name, a URL prefix, and a set of annotated **controllers** inside
+the namespace named after the app. No base classes, no action list, no export boilerplate — the
+CMake-generated export unit scans that namespace with std::meta reflection (**recursively**:
+nested namespaces are descended into) and exports whatever carries a route annotation.
 
 ```cpp
-// apps/web/web_app.hpp -- the whole app
+// apps/web/web_routes.hpp -- annotated controller declarations
 #include <fut/annotate.hpp>
-#include <fut/json.hpp>
 #include <fut/refl_router.hpp>
 
 namespace asio = boost::asio;
@@ -97,28 +95,38 @@ struct sum_out { long long a{}; long long b{}; long long sum{}; };
 
 namespace web {                        // <- the add_app() name, verbatim
 
-[[=fut::http_get("/ping")]]
-inline asio::awaitable<std::string> ping() { co_return "pong"; }   // plain string -> text/plain
+// an empty controller path keeps the method patterns exactly as written
+struct [[=fut::controller{}]] web_controller {
 
-[[=fut::http_post("/calc")]]
-inline asio::awaitable<calc_out> calc([[=fut::from_body{}]] calc_in in) {  // JSON body -> DTO
-    co_return calc_out{in.a * in.b, in.op};
-}
+    [[=fut::http_get("/ping")]]
+    asio::awaitable<std::string> ping();                          // plain string -> text/plain
 
-[[=fut::http_get("/sum/{a}/{b}")]]
-inline asio::awaitable<sum_out> sum([[=fut::from_path("a")]] long long a,   // path placeholders
-                                    [[=fut::from_path("b")]] long long b) {
-    co_return sum_out{a, b, a + b};
-}
+    [[=fut::http_post("/calc")]]
+    asio::awaitable<calc_out> calc([[=fut::from_body{}]] calc_in in);   // JSON body -> DTO
 
-// nested groups are found by the recursive scan
+    [[=fut::http_get("/sum/{a}/{b}")]]
+    asio::awaitable<sum_out> sum([[=fut::from_path("a")]] long long a,  // path placeholders
+                                 [[=fut::from_path("b")]] long long b);
+};
+
 namespace beta {
-[[=fut::http_get("/beta/note")]]
-inline asio::awaitable<std::string> beta_note() { co_return "from namespace web::beta"; }
+// nested namespace: the scan descends into it; class path joins onto methods
+struct [[=fut::controller("/beta")]] beta_controller {
+    [[=fut::http_get("/note")]]
+    asio::awaitable<std::string> note();                          // -> /beta/note
+};
 } // namespace beta
 
 } // namespace web
 ```
+
+Definitions live in `web_routes.cpp` as an ordinary translation unit (`asio::awaitable<sum_out>
+web_controller::sum(long long a, long long b) { ... }`) — no annotations there.
+
+**One style per app, enforced**: a scanned namespace may hold either controller classes or
+annotated free functions — mixing the two fails to compile with an explanatory static_assert.
+Free-function style remains valid for tiny apps (`FUT_EXPORT_APP` and
+`make_app_table<^^fn, ...>` are the explicit escape hatches).
 
 Wire it up with the `add_app()` helper (defined in `cmake/fut.cmake`, included by the
 top-level `CMakeLists.txt`):

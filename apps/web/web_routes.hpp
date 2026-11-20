@@ -1,13 +1,11 @@
 #pragma once
 
-// /api/web -- sample front-end-facing app (declaration/definition split).
+// /api/web -- sample front-end-facing app, controller style.
 //
-// This header carries the annotated DECLARATIONS inside namespace web (the
-// namespace named after the app). The CMake-generated export unit includes
-// it and scans -- recursively, so the nested 'beta' group works too.
-// Definitions live in web_routes.cpp, compiled as an ordinary translation
-// unit; the generated unit's calls resolve through the linker. Including
-// this header anywhere else never scans anything.
+// This header carries the annotated controller DECLARATIONS; definitions live
+// in web_routes.cpp as an ordinary translation unit. The CMake-generated
+// export unit scans namespace web (recursively -- the beta controller sits
+// in a nested namespace) and links to the definitions.
 
 #include <string>
 
@@ -39,33 +37,40 @@ struct sum_out {
 
 namespace web {
 
-[[=fut::http_get("/ping")]]
-asio::awaitable<pong_dto> ping();
+// General routes: an empty controller path keeps the method patterns
+// unchanged (/ping, /hello, /time, /calc, /sum/{a}/{b}, /note).
+struct [[=fut::controller{}]] web_controller {
 
-// empty key -> falls back to the parameter name ("name")
-[[=fut::http_get("/hello")]]
-asio::awaitable<hello_out> hello([[=fut::from_query{}]] std::string name);
+    [[=fut::http_get("/ping")]]
+    asio::awaitable<pong_dto> ping();
 
-[[=fut::http_get("/time")]]
-asio::awaitable<time_out> time();
+    // empty key -> falls back to the parameter name ("name")
+    [[=fut::http_get("/hello")]]
+    asio::awaitable<hello_out> hello([[=fut::from_query{}]] std::string name);
 
-[[=fut::http_post("/calc")]]
-asio::awaitable<calc_out> calc([[=fut::from_body{}]] calc_in in);
+    [[=fut::http_get("/time")]]
+    asio::awaitable<time_out> time();
 
-// path placeholder binding: "/sum/{a}/{b}"
-[[=fut::http_get("/sum/{a}/{b}")]]
-asio::awaitable<sum_out> sum([[=fut::from_path("a")]] long long a,
-                             [[=fut::from_path("b")]] long long b);
+    [[=fut::http_post("/calc")]]
+    asio::awaitable<calc_out> calc([[=fut::from_body{}]] calc_in in);
 
-// plain std::string return -> served as text/plain
-[[=fut::http_get("/note")]]
-asio::awaitable<std::string> note();
+    [[=fut::http_get("/sum/{a}/{b}")]]
+    asio::awaitable<sum_out> sum([[=fut::from_path("a")]] long long a,
+                                 [[=fut::from_path("b")]] long long b);
+
+    // plain std::string return -> served as text/plain
+    [[=fut::http_get("/note")]]
+    asio::awaitable<std::string> note();
+};
 
 namespace beta {
 
-// found by the recursive scan
-[[=fut::http_get("/beta/note")]]
-asio::awaitable<std::string> beta_note();
+// A controller inside a nested namespace: the recursive scan finds it, and
+// its class path composes with the method path -> /beta/note.
+struct [[=fut::controller("/beta")]] beta_controller {
+    [[=fut::http_get("/note")]]
+    asio::awaitable<std::string> note();
+};
 
 } // namespace beta
 

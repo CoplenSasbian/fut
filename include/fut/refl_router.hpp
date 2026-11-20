@@ -447,6 +447,27 @@ consteval route_location ns_scan_locate(meta::info ns, std::size_t idx) {
     return {};
 }
 
+// Style rule: an app namespace is EITHER free-function actions OR controller
+// classes -- mixing is rejected at compile time, so both styles stay obvious
+// and no app half-migrates.
+consteval std::size_t ns_free_count(meta::info ns) {
+    std::size_t n = 0;
+    for (auto m : meta::members_of(ns, meta::access_context::unchecked())) {
+        if (is_route_function(m)) ++n;
+        else if (meta::is_namespace(m)) n += ns_free_count(m);
+    }
+    return n;
+}
+
+consteval std::size_t ns_controller_count(meta::info ns) {
+    std::size_t n = 0;
+    for (auto m : meta::members_of(ns, meta::access_context::unchecked())) {
+        if (is_controller_type(m)) ++n;
+        else if (meta::is_namespace(m)) n += ns_controller_count(m);
+    }
+    return n;
+}
+
 template <meta::info Ns>
 consteval std::size_t ns_route_count() { return ns_scan_count(Ns); }
 
@@ -488,6 +509,10 @@ template <meta::info Ns>
 constexpr ::fut::app_table make_scanned_table(std::string_view name, std::string_view prefix) {
     static_assert(ns_route_count<Ns>() > 0,
                   "fut: no [[=fut::http_*]] annotated actions were found in the namespace");
+    static_assert(ns_controller_count(Ns) == 0 || ns_free_count(Ns) == 0,
+                  "fut: this app mixes controller classes with free-function actions."
+                  " Pick one style per app: either annotate free functions, or"
+                  " make the actions members of [[=fut::controller]] classes.");
     return ::fut::app_table{name, prefix, ns_records_v<Ns>.data(), ns_route_count<Ns>()};
 }
 

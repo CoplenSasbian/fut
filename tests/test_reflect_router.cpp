@@ -66,9 +66,9 @@ asio::awaitable<std::string> mixed([[=fut::from_path("n")]] int n) {
 constexpr auto table = fut::refl::make_app_table<^^ping, ^^add, ^^greet, ^^mul, ^^raw,
                                                   ^^who, ^^txt, ^^mixed>("demo", "/api/demo");
 
-// ---- namespace-scanned table (recursion included) ----
+// ---- namespace-scanned tables: one style per namespace ---------------------
 
-namespace scan_demo {
+namespace scan_free {
 
 [[=fut::http_get("/one")]]
 inline asio::awaitable<greet_out> scan_one() { co_return greet_out{"flat"}; }
@@ -78,16 +78,31 @@ namespace nested {
 inline asio::awaitable<greet_out> scan_two() { co_return greet_out{"nested"}; }
 } // namespace nested
 
-// a controller in the same namespace: its methods join the same table
-struct [[=fut::controller("/grp")]] scan_controller {
+} // namespace scan_free
+
+constexpr auto scanned_free =
+    fut::refl::make_scanned_table<^^scan_free>("scan", "/api/scan");
+
+namespace scan_ctrl {
+
+struct [[=fut::controller{}]] scan_controller {
     [[=fut::http_get("/first")]]
-    asio::awaitable<greet_out> scan_ctrl() { co_return greet_out{"controller"}; }
+    asio::awaitable<greet_out> scan_first() { co_return greet_out{"controller"}; }
 };
 
-} // namespace scan_demo
+namespace nested {
+// a controller in a nested namespace: the recursive scan finds it, and its
+// class path composes with the method path
+struct [[=fut::controller("/grp")]] nested_controller {
+    [[=fut::http_get("/second")]]
+    asio::awaitable<greet_out> scan_second() { co_return greet_out{"nested-controller"}; }
+};
+} // namespace nested
 
-constexpr auto scanned =
-    fut::refl::make_scanned_table<^^scan_demo>("scan", "/api/scan");
+} // namespace scan_ctrl
+
+constexpr auto scanned_ctrl =
+    fut::refl::make_scanned_table<^^scan_ctrl>("scan2", "/api/scan2");
 
 // Drives the table exactly the way the server does.
 asio::awaitable<fut::response> call_table(const fut::app_table& t, fut::request req) {
@@ -231,33 +246,42 @@ TEST_CASE("no match -> 404 (including method mismatch)") {
     CHECK(run(make_req("POST", "/ping")).status == 404);
 }
 
-TEST_CASE("namespace scan discovers flat, nested and controller routes") {
-    REQUIRE(scanned.route_count == 3);
+TEST_CASE("free-function scan: flat actions and nested namespaces") {
+    REQUIRE(scanned_free.route_count == 2);
+    CHECK(scanned_free.entries()[0].pattern == "/one");
+    CHECK(scanned_free.entries()[1].pattern == "/two");
 
-    bool has_one = false, has_two = false, has_ctrl = false;
-    for (const auto& r : scanned.entries()) {
-        if (r.pattern == "/one") has_one = true;
-        if (r.pattern == "/two") has_two = true;
-        if (r.pattern == "/grp/first") has_ctrl = true;   // controller prefix joined
-    }
-    CHECK(has_one);
-    CHECK(has_two);
-    CHECK(has_ctrl);
-
-    const auto res1 = run(scanned, make_req("GET", "/one"));
+    const auto res1 = run(scanned_free, make_req("GET", "/one"));
     const auto v1 = fut::parse<greet_out>(res1.body);
     REQUIRE(v1.has_value());
     CHECK(v1->hi == "flat");
 
-    const auto res2 = run(scanned, make_req("GET", "/two"));
+    const auto res2 = run(scanned_free, make_req("GET", "/two"));
     const auto v2 = fut::parse<greet_out>(res2.body);
     REQUIRE(v2.has_value());
     CHECK(v2->hi == "nested");
+}
 
-    const auto res3 = run(scanned, make_req("GET", "/grp/first"));
-    const auto v3 = fut::parse<greet_out>(res3.body);
-    REQUIRE(v3.has_value());
-    CHECK(v3->hi == "controller");
+TEST_CASE("controller scan: prefix join and nested-namespace discovery") {
+    REQUIRE(scanned_ctrl.route_count == 2);
+
+    bool has_first = false, has_second = false;
+    for (const auto& r : scanned_ctrl.entries()) {
+        if (r.pattern == "/first") has_first = true;          // empty class path
+        if (r.pattern == "/grp/second") has_second = true;     // joined class path
+    }
+    CHECK(has_first);
+    CHECK(has_second);
+
+    const auto res1 = run(scanned_ctrl, make_req("GET", "/first"));
+    const auto v1 = fut::parse<greet_out>(res1.body);
+    REQUIRE(v1.has_value());
+    CHECK(v1->hi == "controller");
+
+    const auto res2 = run(scanned_ctrl, make_req("GET", "/grp/second"));
+    const auto v2 = fut::parse<greet_out>(res2.body);
+    REQUIRE(v2.has_value());
+    CHECK(v2->hi == "nested-controller");
 }
 
 } // TEST_SUITE
