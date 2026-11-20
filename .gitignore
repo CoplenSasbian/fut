@@ -1,0 +1,7 @@
+build/
+.probe/
+.tools/
+.vcpkg/
+.vs/
+.vscode/
+.idea/

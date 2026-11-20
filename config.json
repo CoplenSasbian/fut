@@ -1,0 +1,7 @@
+{
+  "host": "127.0.0.1",
+  "port": 8080,
+  "threads": 2,
+  "apps_dir": "apps",
+  "request_timeout_seconds": 30
+}
