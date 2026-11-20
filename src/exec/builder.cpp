@@ -60,6 +60,7 @@ struct status_dto {
 };
 
 // Built-in introspection endpoint: GET /api/core/status
+namespace core_ns {
 [[=fut::http_get("/status")]]
 asio::awaitable<status_dto> core_status(const fut::request& req) {
     (void)req;
@@ -69,9 +70,10 @@ asio::awaitable<status_dto> core_status(const fut::request& req) {
             dto.apps.push_back({std::string(t->name), std::string(t->prefix), t->route_count});
     co_return dto;
 }
+} // namespace core_ns
 
 constexpr auto core_table_v =
-    fut::refl::make_app_table<^^core_status>("core", "/api/core");
+    fut::refl::make_scanned_table<^^core_ns>("core", "/api/core");
 
 void log_exception(std::exception_ptr ep) {
     if (!ep) return;

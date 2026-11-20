@@ -1,15 +1,13 @@
 #pragma once
+
 // fut/route.hpp -- public ABI shared by the server executable and every app DLL.
 //
 // An "app" is a Django-style concept: a name, a URL prefix, and a set of
-// annotated free functions ("actions"). Each app DLL exports one fut::app_table
-// (see FUT_EXPORT_APP in fut/refl_router.hpp); the server dispatches
-// (method, path) against the records of the loaded tables.
+// annotated controllers. Each app DLL exports one fut::app_table; the
+// server dispatches (method, path) against the records of the loaded tables.
 //
-// All modules must be built with the same compiler and runtime (the CMake
-// presets in this repository guarantee that). Bump fut::abi_version whenever
-// this header changes in an incompatible way -- the server refuses to load
-// DLLs whose ABI version does not match.
+// All modules must be built with the same compiler and runtime. Bump
+// fut::abi_version whenever this header changes incompatibly.
 
 #include <array>
 #include <cstddef>
@@ -35,21 +33,69 @@ inline constexpr const char* library_version = "0.2.0";
 #endif
 
 // ---------------------------------------------------------------------------
+// method -- the HTTP verb, an enum (not strings)
+// ---------------------------------------------------------------------------
+
+enum class method : std::uint8_t {
+    GET,
+    POST,
+    PUT,
+    DEL,   // "DELETE" is a Windows macro; DEL avoids the clash
+};
+
+// ---------------------------------------------------------------------------
+// detail::text_buf -- fixed-capacity string buffer (structural)
+// ---------------------------------------------------------------------------
+
+namespace detail {
+
+template <std::size_t Max>
+struct text_buf {
+    char chars[Max]{};
+
+    constexpr text_buf() = default;
+    constexpr text_buf(std::string_view s) {
+        for (std::size_t i = 0; i < s.size() && i + 1 < Max; ++i) chars[i] = s[i];
+    }
+    constexpr std::size_t size() const {
+        std::size_t n = 0;
+        while (n < Max && chars[n]) ++n;
+        return n;
+    }
+    constexpr std::string_view view() const { return {chars, size()}; }
+};
+
+} // namespace fut::detail
+
+// ---------------------------------------------------------------------------
+// scannable -- "the namespace scanner sees me and calls my operation()"
+//
+// ONLY annotations with namespace-level work derive from this. Today that
+// is fut::controller: the scanner finds controller-annotated CLASS TYPES,
+// passes the class's std::meta::info to controller::operation(), which
+// walks the class's member functions for http_action annotations.
+//
+// Verbs (http_get etc.) do NOT derive scannable -- they are http_action
+// values read by the controller's operation(), not by the namespace scan.
+// ---------------------------------------------------------------------------
+
+struct scannable {};
+
+inline constexpr std::size_t max_entity_annotations = 8;
+
+// ---------------------------------------------------------------------------
 // request / response
 // ---------------------------------------------------------------------------
 
-// A request as handed to actions. All string_views point into buffers owned
-// by the server and stay valid for the duration of the handler call.
 struct request {
     std::string_view method{};   // "GET" / "POST" / ...
     std::string_view target{};   // raw request target (with query)
-    std::string_view path{};     // sub-path relative to the app prefix; "/" when exactly on it
+    std::string_view path{};     // sub-path relative to the app prefix
     std::string_view query{};    // everything after '?'
     std::string_view body{};     // request body
     std::span<const std::pair<std::string_view, std::string_view>> headers{};
 };
 
-// Built by an action (or by the framework); ownership moves to the server.
 struct response {
     unsigned status = 200;
     std::string content_type = "application/json";
@@ -62,7 +108,7 @@ struct response {
 };
 
 // ---------------------------------------------------------------------------
-// path matching: literal segments must match, "{name}" segments are captured
+// path matching
 // ---------------------------------------------------------------------------
 
 struct path_match {
@@ -108,8 +154,6 @@ inline bool match_pattern(std::string_view pattern, std::string_view path, path_
     return true;
 }
 
-// Thrown by the framework when parameter binding fails (invalid JSON body,
-// missing query/path/header value); the server turns it into a 400 response.
 struct bind_error : std::runtime_error {
     explicit bind_error(std::string_view what) : std::runtime_error(std::string(what)) {}
 };
