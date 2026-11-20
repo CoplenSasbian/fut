@@ -152,24 +152,45 @@ namespace with std::meta reflection — every function carrying
 nothing is listed by hand. A namespace with no annotated actions fails to compile with a
 static_assert.
 
-### One translation unit (why headers included elsewhere cannot duplicate anything)
+### One scanner (why headers included elsewhere cannot duplicate anything)
 
-The generated export unit is a **unity build**: every source listed in `add_app()` is
-`#include`d into that single translation unit, and those sources are marked `HEADER_FILE`, so
-CMake never compiles them standalone. This removes both ways a multi-file app could go wrong:
+Scanning code exists in exactly **one** place per app: the generated export unit. `members_of` is
+an ordinary library call, not a compiler hook — including the app header from `a.cpp`, `b.cpp`
+or any other target puts no scanning code there, so nothing is scanned and nothing is registered
+twice. Duplicates are structurally impossible, not merely discouraged.
 
-* **No missing routes.** Actions may be split across as many files as the app likes — all listed
-  sources are visible to the one scan (`apps/web` demonstrates this: flat actions in
-  `web_app.hpp`, the `beta` group in `web_beta.hpp`, one 7-route table out of two files).
-* **No duplicate definitions.** Nothing outside the generated unit compiles the sources, so a
-  shared header cannot yield double symbols.
+Two app layouts are supported, picked per source extension:
 
-And the scan itself can never run twice: `std::meta` reflection works on the entities of one
-translation unit, and only the generated unit scans. Including an actions header from other
-targets (say, a desktop client reusing the DTOs) is harmless — it just sees declarations. The
-ordinary header rules still apply there: anything *defined* in such a shared header must be
-`inline`, or the header should carry declarations only with the definitions compiled in their own
-TU (the generated unit calls the declared functions and the linker resolves them).
+**Declaration/definition split (recommended for real apps).** Annotated *declarations* in the
+header, plain definitions in `.cpp` files — reflection works on declarations, no definition has
+to be visible to the scanner; the generated unit's calls resolve through the linker.
+
+```cpp
+// web_routes.hpp -- annotated declarations; the generated unit scans these
+namespace web {
+[[=fut::http_post("/calc")]]
+asio::awaitable<calc_out> calc([[=fut::from_body{}]] calc_in in);
+}
+```
+```cpp
+// web_routes.cpp -- an ordinary translation unit; no annotations here
+#include "web_routes.hpp"
+namespace web {
+asio::awaitable<calc_out> calc(calc_in in) { co_return calc_out{in.a * in.b, in.op}; }
+}
+```
+```cmake
+add_app(web /api/web web_routes.hpp web_routes.cpp)
+```
+
+Headers are unity-included into the generated unit (several headers → all scanned); `.cpp`
+sources are compiled normally and linked into the same DLL. `apps/web` demonstrates this split,
+including a nested `web::beta` group in a second scanned region.
+
+**Header-only (fine for small apps).** List only headers and define the actions `inline` there
+(`apps/admin` does this); the generated unit includes them — one scan, one definition. For
+headers shared with *other* targets, the ordinary header rule applies: defined entities must be
+`inline`, which is exactly what header-only actions are.
 
 Then reference the directory once from the top level (`add_subdirectory(apps/pay)`), build, and
 the server picks the DLL up by prefix on the next start. (Hand-rolled export lists remain
@@ -281,7 +302,9 @@ Neither the server executable nor the other app DLLs are rebuilt.
   verbs, `parameters_of` drives binding, and `[:F:]` splices the call site.
 * **Namespace scanning**: `members_of(^^ns, access_context)` also enumerates namespaces
   (GCC 16.2) — nested namespaces appear as `is_namespace` members, so the export unit's scan
-  recurses and actions can be grouped in sub-namespaces without any list to maintain.
+  recurses and actions can be grouped in sub-namespaces without any list to maintain. Reflection
+  works on **declarations**: annotated declarations in a header are scanned while their
+  definitions compile as ordinary translation units.
 * **Annotation values** are read through `std::meta::constant_of` (GCC 16.2 does not yet accept
   direct `[:annotation:]` splices).
 * **Member enumeration** utilities for DTO introspection: `include/fut/reflect.hpp`
