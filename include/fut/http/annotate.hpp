@@ -146,6 +146,9 @@ void register_member(const ::fut::http::router_module* rm, std::string_view pref
 
 template <std::meta::info Entity>
 void controller::operation(::fut::fut_ctx* ctx, std::string_view prefix) {
+    static_assert(std::meta::is_type(Entity) && std::meta::is_class_type(Entity),
+                  "fut::controller must annotate a class type -- the scanner hands it "
+                  "whatever carries the annotation, and a controller reads class members");
     const ::fut::http::router_module* rm = ::fut::http::router_of(ctx);
     if (!rm || !rm->add_route) return;
     [&]<std::size_t... M>(std::index_sequence<M...>) {

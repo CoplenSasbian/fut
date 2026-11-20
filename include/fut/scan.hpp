@@ -4,16 +4,20 @@
 //
 //     fut::scan::run<^^admin>(ctx, "/api/admin");
 //
-// walks namespace admin (recursively), finds every class type carrying a
-// scannable-derived annotation, and calls
+// Recursion rule (exactly one level, namespaces only):
 //
-//     Annotation::operation<TheClass>(ctx, prefix)
+//   * the scanner looks at the DIRECT members of the namespace;
+//   * a member that is a namespace is the ONLY thing it recurses into;
+//   * any other member (class, function, variable, enum, ...) is never
+//     descended into -- it is handed to the annotation found on it, once,
+//     and that is the end of it.
 //
-// once per annotation. An app DLL's exported fut_app_register() is exactly
-// this call -- see FUT_EXPORT_APP_NS in fut/http/http.hpp.
+// So a controller class nested inside another class is invisible to the
+// scan, while a controller in a nested namespace is found. The annotation's
+// operation<Entity>() decides what to do with the entity it was given.
 //
-// Nothing here knows about HTTP or routes: a new scannable annotation needs
-// no change to this file.
+// Nothing here knows about HTTP: a new scannable annotation needs no change
+// to this file.
 
 #include <array>
 #include <cstddef>
@@ -31,34 +35,30 @@ inline constexpr std::size_t max_ns_members = 32;
 
 // Scannable-derived annotations on an entity, copied into a constexpr array
 // (splices and template arguments need a named constant).
+//
+// Some namespace members cannot be queried (an unresolved overload set is
+// one): annotations_of throws for those. They carry no annotation, so
+// skipping them is correct -- the catch is the guard, not an error path.
 template <std::size_t N, meta::info Entity>
 consteval std::array<meta::info, N> entity_ops() {
     std::array<meta::info, N> out{};
     std::size_t i = 0;
-    for (auto a : meta::annotations_of(Entity))
-        if (i < N && meta::is_base_of_type(^^fut::scannable, meta::type_of(a)))
-            out[i++] = a;
+    try {
+        for (auto a : meta::annotations_of(Entity))
+            if (i < N && meta::is_base_of_type(^^fut::scannable, meta::type_of(a)))
+                out[i++] = a;
+    } catch (...) {
+    }
     return out;
 }
 
-// Scannable-annotated class types plus nested namespaces of a namespace.
-// Functions and everything else are invisible to the scan by construction.
+// The direct members of a namespace, in declaration order.
 template <std::size_t N, meta::info Ns>
-consteval std::array<meta::info, N> ns_targets() {
+consteval std::array<meta::info, N> ns_members() {
     std::array<meta::info, N> out{};
     std::size_t i = 0;
-    for (auto m : meta::members_of(Ns, meta::access_context::unchecked())) {
-        if (i >= N) break;
-        if (meta::is_namespace(m)) {
-            out[i++] = m;
-        } else if (meta::is_type(m) && meta::is_class_type(m)) {
-            for (auto a : meta::annotations_of(m))
-                if (meta::is_base_of_type(^^fut::scannable, meta::type_of(a))) {
-                    out[i++] = m;
-                    break;
-                }
-        }
-    }
+    for (auto m : meta::members_of(Ns, meta::access_context::unchecked()))
+        if (i < N) out[i++] = m;
     return out;
 }
 
@@ -76,8 +76,9 @@ void run_entity(fut_ctx* ctx, std::string_view prefix) {
         call_op<ops[A], Entity>(ctx, prefix);
 }
 
+// Every scannable annotation on one entity, never descending into it.
 template <meta::info Entity>
-void run_class(fut_ctx* ctx, std::string_view prefix) {
+void run_entity(fut_ctx* ctx, std::string_view prefix) {
     [&]<std::size_t... A>(std::index_sequence<A...>) {
         (run_entity<Entity, A>(ctx, prefix), ...);
     }(std::make_index_sequence<max_entity_annotations>());
@@ -88,11 +89,13 @@ void run(fut_ctx* ctx, std::string_view prefix);
 
 template <meta::info Ns, std::size_t M>
 void run_member(fut_ctx* ctx, std::string_view prefix) {
-    constexpr auto ms = ns_targets<max_ns_members, Ns>();
+    constexpr auto ms = ns_members<max_ns_members, Ns>();
     if constexpr (M < max_ns_members && ms[M] != meta::info{}) {
         constexpr meta::info m = ms[M];
-        if constexpr (meta::is_namespace(m)) run<m>(ctx, prefix);
-        else run_class<m>(ctx, prefix);
+        if constexpr (meta::is_namespace(m))
+            run<m>(ctx, prefix);              // the only recursion
+        else
+            run_entity<m>(ctx, prefix);       // handed over, never descended
     }
 }
 

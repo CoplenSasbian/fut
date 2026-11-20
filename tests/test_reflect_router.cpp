@@ -66,6 +66,13 @@ struct [[=fut::controller{}]] main_controller {
     asio::awaitable<std::string> mixed([[=fut::from_path("n")]] int n) {
         co_return "n squared is " + std::to_string(n * n);
     }
+
+    // A controller nested inside a class: the scan never descends into a
+    // class, so this one must NOT be registered (see the test below).
+    struct [[=fut::controller("/inner")]] inner_controller {
+        [[=fut::http_get("/hidden")]]
+        asio::awaitable<greet_out> hidden() { co_return greet_out{"unreachable"}; }
+    };
 };
 
 struct [[=fut::controller("/grp")]] grouped_controller {
@@ -177,6 +184,15 @@ TEST_CASE("the scan registers every verb-annotated member, prefix composed") {
     CHECK(h.find(fut::method::GET, "/api/demo/mul/{x}/{y}") != nullptr);
     CHECK(h.find(fut::method::GET, "/api/demo/grp/first") != nullptr);   // controller path
     CHECK(h.find(fut::method::GET, "/api/demo/deep/one") != nullptr);    // nested namespace
+}
+
+TEST_CASE("the scan does not recurse into classes") {
+    harness h{"/api/demo"};
+    // 10 routes: the nested controller inside main_controller was skipped,
+    // because only namespaces are recursed into.
+    CHECK(h.s.routes.size() == 10);
+    CHECK(h.find(fut::method::GET, "/api/demo/inner/hidden") == nullptr);
+    CHECK(drive(h.s, fut::method::GET, "/api/demo/inner/hidden").status == 404);
 }
 
 TEST_CASE("an empty app prefix still yields absolute paths") {
