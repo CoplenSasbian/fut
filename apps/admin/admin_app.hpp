@@ -84,7 +84,7 @@ namespace admin {
 //
 // Registered by a scannable annotation while this app loads, so it wraps
 // every admin route and nothing else. Middleware that must apply to every
-// app belongs to the executable (server_builder::add_middleware) -- an app
+// app belongs to the executable (fut::exec::server::add_middleware) -- an app
 // never reaches outside itself.
 asio::awaitable<fut::response> stamp_app(const fut::request& req,
                                          const fut::path_match& params,

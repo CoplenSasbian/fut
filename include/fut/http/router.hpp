@@ -22,7 +22,7 @@
 //
 // Two scopes exist, and an app can only reach its own:
 //
-//   platform  registered by the executable (server_builder::add_middleware),
+//   platform  registered by the executable (fut::exec::server::add_middleware),
 //             runs for every request, including the ones that match nothing;
 //   app       registered through add_middleware below while the app loads,
 //             runs for that app's routes only.

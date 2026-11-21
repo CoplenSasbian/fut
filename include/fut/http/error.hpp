@@ -22,7 +22,7 @@
 //   no matching route              -> 404
 //
 // The executable can replace the body for every status with
-// server_builder::on_error(); an app that wants its own shape wraps the
+// fut::exec::server::on_error(); an app that wants its own shape wraps the
 // response in its own middleware.
 
 #include <stdexcept>

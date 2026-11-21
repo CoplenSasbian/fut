@@ -1,165 +1,232 @@
-#include "server.hpp"
+#include "listener.hpp"
 
-#include <array>
+#include <algorithm>
 #include <chrono>
-#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <filesystem>
 #include <string>
-#include <string_view>
-#include <utility>
+#include <system_error>
+#include <thread>
 #include <vector>
 
 #include <boost/asio.hpp>
 
+#include <fut/ctx.hpp>
+#include <fut/http/route.hpp>
 #include <fut/json.hpp>
 #include <fut/log.hpp>
 
-#include "http_parser.hpp"
+#include "app_loader.hpp"
+#include "config.hpp"
+#include "router.hpp"
+#include "server.hpp"
 
-namespace fut::exec {
+#if defined(_WIN32)
+#  include <windows.h>
+#else
+#  include <unistd.h>
+#endif
 
 namespace asio = boost::asio;
-using tcp = asio::ip::tcp;
 
+namespace fut::exec {
 namespace {
 
-constexpr auto srv_log = fut::log::grp("server");
+// Directory of the running executable (for resolving a relative apps_dir).
+std::filesystem::path exe_dir() {
+#if defined(_WIN32)
+    char buf[1024] = {};
+    const DWORD n = GetModuleFileNameA(nullptr, buf, sizeof(buf));
+    if (n > 0 && n < sizeof(buf))
+        return std::filesystem::path{std::string(buf, n)}.parent_path();
+#else
+    char buf[4096] = {};
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf));
+    if (n > 0) return std::filesystem::path{std::string(buf, static_cast<size_t>(n))}.parent_path();
+#endif
+    return std::filesystem::current_path();
+}
 
-constexpr std::size_t read_chunk = 16 * 1024;
-constexpr std::size_t max_body = 32 * 1024 * 1024;
+// Read by the built-in /api/core/status route once the router is populated.
+const router* g_status_router = nullptr;
+
+struct app_info_dto {
+    std::string name{};
+    std::string prefix{};
+    std::size_t routes{};
+};
+
+struct status_dto {
+    std::string service{"fut"};
+    std::string version{fut::library_version};
+    std::uint32_t abi{fut::abi_version};
+    std::vector<app_info_dto> apps{};
+};
+
+// Built-in introspection route: GET /api/core/status
+asio::awaitable<fut::response> core_status(const fut::request&, const fut::path_match&) {
+    status_dto dto;
+    if (g_status_router)
+        for (const auto& a : g_status_router->apps())
+            dto.apps.push_back(app_info_dto{a.name, a.prefix, a.routes});
+    co_return fut::json(dto);
+}
 
 void log_exception(std::exception_ptr ep) {
     if (!ep) return;
     try {
         std::rethrow_exception(std::move(ep));
     } catch (const std::exception& e) {
-        srv_log.error("session exception: {}", e.what());
-    } catch (...) {
-        srv_log.error("session exception: unknown");
+        fut::log::core_log.error("listener exception: {}", e.what());
     }
 }
 
-// Reads up to `dst.size()` bytes with a deadline. Returns the byte count, or
-// 0 when the peer closed or the timeout fired.
-asio::awaitable<std::size_t> read_some(tcp::socket& socket, asio::mutable_buffer dst,
-                                       std::chrono::seconds timeout) {
-    asio::steady_timer deadline(co_await asio::this_coro::executor);
-    deadline.expires_after(timeout);
-    deadline.async_wait([&socket](const boost::system::error_code& ec) {
-        if (!ec) {
-            boost::system::error_code ignored;
-            socket.close(ignored);   // unblocks the pending read
+// Starts the chains; a chain that cannot start (unwritable directory, bad
+// pattern) is reported and skipped -- logging must never take the server down.
+void install_chains(const std::vector<fut::log::chain_options>& chains) {
+    for (const fut::log::chain_options& chain : chains) {
+        try {
+            fut::log::add_chain(chain);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "fut: cannot start a log chain: %s\n", e.what());
         }
-    });
-
-    auto [ec, n] = co_await socket.async_read_some(dst, asio::as_tuple(asio::use_awaitable));
-    deadline.cancel();
-    co_return ec ? 0 : n;
-}
-
-asio::awaitable<void> write_all(tcp::socket& socket, std::string_view data) {
-    co_await asio::async_write(socket, asio::buffer(data), asio::use_awaitable);
-}
-
-// Parsed message -> fut::request. The router owns matching, the middleware
-// chains and the error mapping (400/404/405/500).
-asio::awaitable<fut::response> dispatch(router* rt, const http_request_message& msg) {
-    const std::string_view target = msg.target;
-    const auto qpos = target.find('?');
-    const std::string_view path =
-        (qpos == std::string_view::npos) ? target : target.substr(0, qpos);
-    const std::string_view query =
-        (qpos == std::string_view::npos) ? std::string_view{} : target.substr(qpos + 1);
-
-    std::vector<std::pair<std::string_view, std::string_view>> headers;
-    headers.reserve(msg.headers.size());
-    for (const auto& [name, value] : msg.headers) headers.emplace_back(name, value);
-
-    co_return co_await rt->dispatch(fut::request{msg.method, target, path, query, msg.body,
-                                                 headers});
-}
-
-asio::awaitable<void> run_session(tcp::socket socket, router* rt,
-                                  std::chrono::seconds timeout) {
-    request_parser parser;
-
-    std::string buffer;          // bytes received but not yet parsed
-    buffer.reserve(read_chunk * 2);
-    std::array<char, read_chunk> chunk{};
-
-    for (;;) {
-        // 1) Parse everything already buffered (pipelined requests too).
-        bool keep_going = true;
-        while (keep_going && !buffer.empty()) {
-            switch (parser.feed(buffer.data(), buffer.size())) {
-            case request_parser::status::need_more:
-                buffer.clear();   // all bytes consumed; wait for more
-                keep_going = false;
-                break;
-
-            case request_parser::status::error:
-                if (const auto err = parser.error(); !err.empty())
-                    srv_log.warning("bad request from peer: {}", std::string(err));
-                co_await write_all(socket,
-                                   serialize_response(400, "application/json",
-                                                      {}, R"({"error":"bad request"})", false));
-                co_return;
-
-            case request_parser::status::complete: {
-                buffer.erase(0, parser.consumed());
-                const http_request_message& msg = parser.message();
-                if (msg.body.size() > max_body) {
-                    co_await write_all(socket,
-                                       serialize_response(413, "application/json", {},
-                                                          R"({"error":"body too large"})", false));
-                    co_return;
-                }
-
-                const bool keep_alive = msg.keep_alive;
-                const fut::response res = co_await dispatch(rt, msg);
-                co_await write_all(socket,
-                                   serialize_response(res.status, res.content_type, res.headers,
-                                                      res.body, keep_alive));
-                if (!keep_alive) co_return;
-                parser.reset();
-                break;
-            }
-            }
-        }
-
-        // 2) Read more.
-        const std::size_t n = co_await read_some(socket, asio::buffer(chunk), timeout);
-        if (n == 0) co_return;
-        buffer.append(chunk.data(), n);
     }
 }
 
 } // namespace
 
-server::server(asio::io_context& ioc, std::string host, unsigned short port,
-               router& rt, std::chrono::seconds timeout)
-    : ioc_(ioc),
-      host_(std::move(host)),
-      port_(port),
-      acceptor_(ioc),
-      router_(rt),
-      timeout_(timeout) {}
+std::vector<fut::log::chain_options> server::default_log_chains(
+    std::string_view console_pattern, std::string_view file_pattern,
+    std::filesystem::path file_path, std::uint64_t max_bytes, std::uint32_t max_files,
+    fut::log::level console_min, fut::log::level file_min) {
+    return {
+        fut::log::chain_options{
+            .minimum_level = console_min,
+            .formatter = fut::log::pattern_formatter{std::string(console_pattern)},
+            .sink = fut::log::console_sink{.color = true},
+        },
+        fut::log::chain_options{
+            .minimum_level = file_min,
+            .formatter = fut::log::pattern_formatter{std::string(file_pattern)},
+            .sink = fut::log::file_sink{.path = std::move(file_path),
+                                        .max_bytes = max_bytes,
+                                        .max_files = max_files},
+        },
+    };
+}
 
-asio::awaitable<void> server::listen() {
-    const tcp::endpoint ep{asio::ip::make_address(host_), port_};
-    acceptor_.open(ep.protocol());
-    acceptor_.set_option(tcp::acceptor::reuse_address(true));
-    acceptor_.bind(ep);
-    acceptor_.listen(asio::socket_base::max_listen_connections);
-    srv_log.info("listening on http://{}:{}", host_, (unsigned)port_);
+server& server::log_to_console(bool color, fut::log::level minimum,
+                                               std::string_view pattern) {
+    chains_.clear();
+    chains_explicit_ = true;
+    return add_log_chain(fut::log::chain_options{
+        .minimum_level = minimum,
+        .formatter = fut::log::pattern_formatter{std::string(pattern)},
+        .sink = fut::log::console_sink{.color = color},
+    });
+}
 
-    for (;;) {
-        auto [ec, sock] = co_await acceptor_.async_accept(asio::as_tuple(asio::use_awaitable));
-        if (ec) {
-            if (ec == asio::error::operation_aborted) co_return;
-            continue;
+server& server::log_to_file(std::filesystem::path path,
+                                            std::uint64_t max_bytes,
+                                            std::uint32_t max_files,
+                                            fut::log::level minimum,
+                                            std::string_view pattern) {
+    chains_.clear();
+    chains_explicit_ = true;
+    return add_log_chain(fut::log::chain_options{
+        .minimum_level = minimum,
+        .formatter = fut::log::pattern_formatter{std::string(pattern)},
+        .sink = fut::log::file_sink{.path = std::move(path),
+                                    .max_bytes = max_bytes,
+                                    .max_files = max_files},
+    });
+}
+
+int server::run() {
+    int exit_code = 1;
+    bool chains_ready = false;
+    try {
+        config cfg = load_config(cfg_file_);
+        if (host_) cfg.host = *host_;
+        if (port_) cfg.port = *port_;
+        if (threads_) cfg.threads = *threads_;
+        if (apps_dir_) cfg.apps_dir = *apps_dir_;
+        {
+            const std::string level_name = log_level_ ? *log_level_ : cfg.log_level;
+            if (const auto parsed = fut::log::from_string<fut::log::level>(level_name)) {
+                fut::log::set_level(*parsed);
+            } else {
+                fut::log::warning("unknown log level '{}', falling back to info", level_name);
+            }
         }
-        asio::co_spawn(ioc_, run_session(std::move(sock), &router_, timeout_), log_exception);
+        // Chains: an explicit builder policy wins over config.json, which
+        // wins over the compiled-in defaults. Patterns, sinks and levels are
+        // all caller data -- the server has none of its own.
+        install_chains(chains_explicit_ ? chains_ : build_log_chains(cfg.log));
+        chains_ready = true;
+
+        const std::chrono::seconds timeout =
+            timeout_ ? *timeout_ : std::chrono::seconds(cfg.request_timeout_seconds);
+
+        // A relative apps_dir is resolved against the executable's directory.
+        std::filesystem::path apps_dir{cfg.apps_dir};
+        if (apps_dir.is_relative()) apps_dir = exe_dir() / apps_dir;
+
+        asio::io_context ioc;
+        router rt;
+
+        // App DLLs register themselves into the router through the context.
+        // Anything the embedder published with add_module() travels with it.
+        app_loader loader;
+        loader.load_dir(apps_dir, rt, modules_);
+
+        // Platform middleware wraps everything, so register it first.
+        for (const fut::http::middleware_fn& mw : middlewares_) rt.add_global_middleware(mw);
+
+        // Built-in app: the introspection route plus any embedder routes.
+        rt.begin_app("core", "/api/core");
+        rt.add_route(fut::method::GET, "/api/core/status", &core_status);
+        for (const extra_route& r : extra_routes_) rt.add_route(r.method, r.pattern, r.invoke);
+        rt.end_app();
+
+        if (error_handler_) rt.set_error_handler(error_handler_);
+
+        rt.finalize();   // wrap every route with its app's chain
+        g_status_router = &rt;
+
+        listener lsn(ioc, cfg.host, cfg.port, rt, timeout);
+
+        asio::signal_set signals(ioc, SIGINT, SIGTERM);
+        signals.async_wait([&ioc](auto, auto) { ioc.stop(); });
+
+        std::vector<std::thread> pool;
+        const int extra = std::max(0, cfg.threads - 1);
+        for (int i = 0; i < extra; ++i) pool.emplace_back([&ioc] { ioc.run(); });
+
+        fut::log::core_log.info("fut {} (ABI {}) starting: {} thread(s), {} app(s); Ctrl+C to stop",
+                                 fut::library_version, (unsigned)fut::abi_version,
+                                 (int)cfg.threads, (unsigned)rt.apps().size());
+
+        asio::co_spawn(ioc, lsn.listen(), log_exception);
+
+        ioc.run();
+        for (auto& t : pool) t.join();
+
+        g_status_router = nullptr;
+        fut::log::core_log.info("stopped");
+        exit_code = 0;
+    } catch (const std::exception& e) {
+        if (!chains_ready) {
+            install_chains(default_log_chains());
+            chains_ready = true;
+        }
+        fut::log::core_log.critical("fatal: {}", e.what());
     }
+
+    // Flush and join the worker threads before the CRT starts tearing down.
+    fut::log::shutdown();
+    return exit_code;
 }
 
 } // namespace fut::exec

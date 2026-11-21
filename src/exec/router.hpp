@@ -79,7 +79,7 @@ public:
 
     // Replaces the body written for every error status. The default is
     // fut::error(), i.e. {"error":"<message>"}. Install it from the
-    // executable (server_builder::on_error) -- it is platform policy, not an
+    // executable (fut::exec::server::on_error) -- it is platform policy, not an
     // app's.
     void set_error_handler(std::function<fut::response(unsigned, std::string_view)> handler) {
         error_handler_ = std::move(handler);

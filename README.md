@@ -27,7 +27,7 @@ reflection-free fallback path.
   into the status and body; the executable can reshape the envelope
 * One DLL per app (Django-style); registration through a context, no exported tables
 * Generic scanner: adding a new scannable annotation changes neither the scanner nor CMake
-* Fluent `server_builder` for the host executable (port, threads, timeouts, extra routes, ...)
+* One `fut::exec::server` object for the host executable: configure it in a chain, then `run()`
 * Asynchronous logging: colour console + rotating file chains, reflection-based level names
 * doctest suite with full end-to-end coverage (loads the real DLLs)
 
@@ -455,12 +455,12 @@ asio::awaitable<fut::response> log_request(const fut::request& req,
 
 | Scope | Registered by | Covers | Example |
 | --- | --- | --- | --- |
-| **platform** | the executable (`server_builder::add_middleware`) | every request of every app, *including 404s* | request log, metrics, CORS, global auth |
+| **platform** | the executable (`fut::exec::server::add_middleware`) | every request of every app, *including 404s* | request log, metrics, CORS, global auth |
 | **app** | one app DLL (`router_module::add_middleware` while it loads) | that app's routes only | tenant check, app-specific headers |
 
 ```cpp
 // executable: platform scope
-server_builder().add_middleware(&log_request).run();
+fut::exec::server().add_middleware(&log_request).run();
 
 // app DLL: app scope, registered by an ordinary scannable annotation
 namespace admin {
@@ -534,7 +534,7 @@ Helpers: `bad_request`, `unauthorized`, `forbidden`, `not_found`, `method_not_al
 **Reshaping the envelope** is platform policy, not an app's:
 
 ```cpp
-server_builder()
+fut::exec::server()
     .on_error([](unsigned status, std::string_view message) {
         fut::response res;
         res.status = status;
@@ -630,13 +630,13 @@ Patterns are complete paths (the DLL composes its own prefix). Matching prefers 
 route: the pattern with the most literal segments wins, and registration order breaks ties, so
 `/users/hits` beats `/users/{id}`.
 
-## The server builder
+## The server
 
-The host executable is a thin shell over `fut::exec::server_builder`; embedders use it directly:
+The host executable is a thin shell over `fut::exec::server`; embedders use it directly:
 
 ```cpp
 int main() {
-    return fut::exec::server_builder()
+    return fut::exec::server()
         .config_file("config.json")   // JSON config; explicit values below override it
         .host("0.0.0.0")
         .port(8080)
@@ -651,15 +651,15 @@ int main() {
 }
 ```
 
-Logging is part of the builder too. Every logging parameter — patterns, file, sizes, levels — is
+Logging is part of the server too. Every logging parameter — patterns, file, sizes, levels — is
 caller data; the server has none of its own:
 
 ```cpp
-server_builder()
+fut::exec::server()
     .log_to_console(true, fut::log::level::debug, "[{L}] {m}")   // pattern in, not baked
     .run();
 
-server_builder()
+fut::exec::server()
     .clear_log_chains()
     .add_log_chain(fut::log::chain_options{
         .minimum_level = fut::log::level::debug,
@@ -668,12 +668,12 @@ server_builder()
     })
     .run();
 
-server_builder().log_to_file("logs/fut.log", 2 << 20, 3,
+fut::exec::server().log_to_file("logs/fut.log", 2 << 20, 3,
                              fut::log::level::trace, "{T} {g}: {m}");
 ```
 
 Precedence: an explicit builder policy > `config.json` > the compiled-in default set
-(`server_builder::default_log_chains`, which itself takes the patterns and file settings as
+(`fut::exec::server::default_log_chains`, which itself takes the patterns and file settings as
 arguments — `fut::log::console_pattern` / `fut::log::file_pattern` are only the stock values).
 
 The config file describes the same thing as a **list of chains**, so adding a second file or a JSON
@@ -722,7 +722,7 @@ Asynchronous, chain-based logging (`fut/log.hpp`, ported from HeliosView2): a ca
 calling thread and queues a single shared record to every chain; each chain owns a worker thread,
 so a slow sink never blocks the caller.
 
-Chains are installed by `fut::exec::server_builder` from its configuration (see *The server
+Chains are installed by `fut::exec::server` from its configuration (see *The server
 builder*); `fut::log::add_chain` is the primitive it calls, available directly to embedders that
 manage logging themselves:
 
