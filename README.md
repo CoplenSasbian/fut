@@ -446,8 +446,11 @@ GCC 16.2 quirks the implementation works around:
    branches at instantiation, so an untaken branch would hit `constant_of(empty info)` and throw
    even though it never runs;
 2. a splice used as a template argument must go through a `using` alias first;
-3. only `constexpr`-declared locals reach splice and template-argument positions — a loop variable
-   does not, so enumeration goes through `std::array` plus index packs;
+3. enumeration is done with `template for (constexpr ... : std::define_static_array(...))` — the
+   expansion statement makes the loop variable a constant expression, so it can be spliced and
+   used as a template argument directly. A plain `for` loop variable cannot, which is why the old
+   code needed fixed-size arrays plus index packs; a `std::array` copy is now only needed for the
+   guarded `annotations_of` query (which cannot be a range in a throwing+`template for` context);
 4. `annotations_of` throws on infos that represent no entity (an unresolved overload set); the
    scanner guards the query, since such an info can carry no annotation;
 5. parameter names survive for `std::meta::identifier_of`, enabling the empty-key sugar.

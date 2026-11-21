@@ -9,20 +9,23 @@
 //   * the scanner looks at the DIRECT members of the namespace;
 //   * a member that is a namespace is the ONLY thing it recurses into;
 //   * any other member (class, function, variable, enum, ...) is never
-//     descended into -- it is handed to the annotation found on it, once,
-//     and that is the end of it.
+//     descended into -- every scannable annotation on it is called once.
 //
 // So a controller class nested inside another class is invisible to the
 // scan, while a controller in a nested namespace is found.
 //
-// Each annotation found on a member is called as an object:
+// Each annotation is called as an object:
 //
-//     constexpr auto self = [: constant_of(annotation) :];
+//     constexpr auto self = [: std::meta::constant_of(annotation) :];
 //     self.template operation<Entity>(ctx)
 //
 // The annotation's own members are its configuration (`this`); everything
 // else it may need (the app prefix, server services) comes from the
 // context, never from the scanner.
+//
+// Everything here is a `template for` expansion over reflection ranges: no
+// fixed-size caps, no index packs, no per-index helper templates. Adding an
+// entity or an annotation costs exactly one instantiation.
 //
 // Nothing here knows about HTTP: a new scannable annotation needs no change
 // to this file.
@@ -30,7 +33,6 @@
 #include <array>
 #include <cstddef>
 #include <meta>
-#include <utility>
 
 #include <fut/scannable.hpp>
 
@@ -38,80 +40,47 @@ namespace fut::scan {
 
 namespace meta = std::meta;
 
-inline constexpr std::size_t max_ns_members = 32;
-
-// Scannable-derived annotations on an entity, copied into a constexpr array
-// (splices and template arguments need a named constant).
+// The scannable annotations on one entity.
 //
 // Some namespace members cannot be queried (an unresolved overload set is
 // one): annotations_of throws for those. They carry no annotation, so
 // skipping them is correct -- the catch is the guard, not an error path.
-template <std::size_t N, meta::info Entity>
-consteval std::array<meta::info, N> entity_ops() {
-    std::array<meta::info, N> out{};
+template <meta::info Entity>
+consteval auto scannable_annotations() {
+    std::array<meta::info, max_entity_annotations> out{};
     std::size_t i = 0;
     try {
         for (auto a : meta::annotations_of(Entity))
-            if (i < N && meta::is_base_of_type(^^fut::scannable, meta::type_of(a)))
+            if (i < max_entity_annotations &&
+                meta::is_base_of_type(^^fut::scannable, meta::type_of(a)))
                 out[i++] = a;
     } catch (...) {
     }
     return out;
 }
 
-// The direct members of a namespace, in declaration order.
-template <std::size_t N, meta::info Ns>
-consteval std::array<meta::info, N> ns_members() {
-    std::array<meta::info, N> out{};
-    std::size_t i = 0;
-    for (auto m : meta::members_of(Ns, meta::access_context::unchecked()))
-        if (i < N) out[i++] = m;
-    return out;
-}
-
-// Hand one annotated entity to one annotation. The annotation value is the
-// object; calling it as a member is the whole extension mechanism.
-template <meta::info Ann, meta::info Entity>
-void call_op(fut_ctx* ctx) {
-    constexpr auto self = [: meta::constant_of(Ann) :];
-    self.template operation<Entity>(ctx);
-}
-
-template <meta::info Entity, std::size_t A>
-void run_entity(fut_ctx* ctx) {
-    constexpr auto ops = entity_ops<max_entity_annotations, Entity>();
-    if constexpr (A < max_entity_annotations && ops[A] != meta::info{})
-        call_op<ops[A], Entity>(ctx);
-}
-
 // Every scannable annotation on one entity, never descending into it.
 template <meta::info Entity>
-void run_entity(fut_ctx* ctx) {
-    [&]<std::size_t... A>(std::index_sequence<A...>) {
-        (run_entity<Entity, A>(ctx), ...);
-    }(std::make_index_sequence<max_entity_annotations>());
-}
-
-template <meta::info Ns>
-void run(fut_ctx* ctx);
-
-template <meta::info Ns, std::size_t M>
-void run_member(fut_ctx* ctx) {
-    constexpr auto ms = ns_members<max_ns_members, Ns>();
-    if constexpr (M < max_ns_members && ms[M] != meta::info{}) {
-        constexpr meta::info m = ms[M];
-        if constexpr (meta::is_namespace(m))
-            run<m>(ctx);              // the only recursion
-        else
-            run_entity<m>(ctx);       // handed over, never descended
+void visit_entity(fut_ctx* ctx) {
+    constexpr auto anns = scannable_annotations<Entity>();
+    template for (constexpr meta::info a : std::define_static_array(anns)) {
+        if constexpr (a != meta::info{}) {
+            constexpr auto self = [: meta::constant_of(a) :];
+            self.template operation<Entity>(ctx);
+        }
     }
 }
 
 template <meta::info Ns>
 void run(fut_ctx* ctx) {
-    [&]<std::size_t... M>(std::index_sequence<M...>) {
-        (run_member<Ns, M>(ctx), ...);
-    }(std::make_index_sequence<max_ns_members>());
+    template for (constexpr meta::info m :
+                  std::define_static_array(
+                      meta::members_of(Ns, meta::access_context::unchecked()))) {
+        if constexpr (meta::is_namespace(m))
+            run<m>(ctx);              // the only recursion
+        else
+            visit_entity<m>(ctx);     // handed over, never descended
+    }
 }
 
 } // namespace fut::scan
