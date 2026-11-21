@@ -343,48 +343,51 @@ module (including one that never includes the HTTP headers).
 
 ### Composing annotations
 
-`operation` is deliberately **not** virtual, and it cannot be:
-
-* C++ forbids virtual function templates (`error: templates may not be 'virtual'`), and
-  `operation` must be templated on `Entity` — splicing a specific class's members needs a
-  compile-time entity.
-* An annotation value has to be a structural (vptr-free) constant. A polymorphic annotation type
-  is accepted at the `[[= ... ]]` site but `std::meta::constant_of` then fails with
-  `reflect_constant failed`, so the scanner could never read it back.
-
-None of that is a limitation in practice, because the scanner already dispatches on the static
-type: it materialises the annotation value and calls `self.operation<Entity>(ctx)`. A derived
-annotation simply provides its own `operation` and calls the base explicitly:
+**One annotation per concern, stacked on the entity.** The scanner calls *every* scannable
+annotation on an entity, in declaration order, so composition is adding another annotation — never
+subclassing an existing one:
 
 ```cpp
-struct with_health : fut::controller {                  // inherits path + registration
-    constexpr with_health() = default;
-    constexpr with_health(std::string_view p) : fut::controller(p) {}
-
-    template <std::meta::info Entity>
-    void operation(fut::fut_ctx* ctx) const {
-        fut::controller::operation<Entity>(ctx);        // the inherited routes
-
-        const fut::http::router_module* rm = fut::http::router_of(ctx);
-        rm->add_route(rm->self, fut::method::GET,
-                      fut::join_path(ctx->app_prefix, this->path.view(), "/health"),
-                      &health_route);                   // ... plus its own
-    }
-};
-
-struct [[=with_health("/mon")]] monitored_controller {
+struct [[=fut::controller("/mon")]] [[=health{}]] monitored_controller {
     [[=fut::http_get("/ping")]]
-    asio::awaitable<greet_out> ping();                  // -> GET /api/<app>/mon/ping
-};                                                      // -> GET /api/<app>/mon/health
+    asio::awaitable<greet_out> ping();        // controller registers /mon/ping
+};                                            // health        registers /mon/health
 ```
 
-Two more composition styles need no machinery at all:
+**Annotations are peers, not a hierarchy.** When one needs data another carries, it reads it from
+the shared entity — the entity is the composition context:
 
-* **stack annotations** — the scanner calls *every* scannable annotation on an entity, so
-  `struct [[=fut::controller("/a")]] [[=fut::my_extra{}]] C { ... };` runs both, in declaration
-  order;
-* **multiple inheritance** — `struct combined : fut::controller, fut::my_extra { ... };` then call
-  each base's `operation<Entity>(ctx)` in the order you want.
+```cpp
+struct health : fut::scannable {
+    template <std::meta::info Entity>
+    void operation(fut::fut_ctx* ctx) const {
+        constexpr auto controller_ann = fut::ann::first<fut::controller>(Entity);
+        if constexpr (controller_ann != std::meta::info{}) {
+            constexpr auto controller_value = [: std::meta::constant_of(controller_ann) :];
+            const fut::http::router_module* rm = fut::http::router_of(ctx);
+            rm->add_route(rm->self, fut::method::GET,
+                          fut::join_path(ctx->app_prefix,
+                                         controller_value.path.view(), "/health"),
+                          &health_route);
+        }
+    }
+};
+```
+
+`fut::ann` (`fut/annotations.hpp`) is the generic query layer: `of<T>(entity)`, `first<T>(entity)`,
+`has<T>(entity)`, cv-agnostic (GCC records a constexpr-function annotation value as `const T`).
+
+**Deriving from a concrete annotation is not the way to compose.** It looks convenient — the
+derived annotation calls `controller::operation<Entity>(ctx)` and adds its own route — but it
+makes one annotation depend on another's implementation, hides the call order inside that call,
+and stops composing as soon as two independent behaviours are wanted (multiple inheritance then
+re-introduces the ordering problem at every call site). Note also that `operation` cannot be
+virtual at all: virtual function templates are ill-formed, and a polymorphic annotation value
+cannot be read back (`reflect_constant failed`). Stacking needs neither.
+
+**Middleware is a different concern.** "Do auth / rate-limit around every handler" is not an
+annotation-composition problem: annotations describe *which routes exist*, while invocation policy
+wraps a `route_fn`. Put that in the router/invoke layer, not in an annotation's `operation`.
 
 ## Parameter binding
 
@@ -589,6 +592,7 @@ fut/
 ├── CMakeLists.txt / CMakePresets.json / vcpkg.json
 ├── cmake/fut.cmake         the add_app(name, prefix, sources...) helper
 ├── include/fut/
+│   ├── annotations.hpp     generic annotation queries (fut::ann::of / first / has)
 │   ├── ctx.hpp             fut_ctx: module lookup, the server <-> module contract
 │   ├── scannable.hpp       "the scanner calls my operation()" (global)
 │   ├── scan.hpp            the generic namespace scanner (global, not HTTP)
@@ -631,7 +635,8 @@ ctest --preset release   # 30 cases
 * `test_router` — registration, app bookkeeping, full-path matching, literal-over-placeholder
   specificity, method filtering.
 * `test_reflect_router` — the scan and controller registration: every binding style, string and DTO
-  returns, controller path composition, nested namespaces, and that a controller nested inside a
+  returns, controller path composition, nested namespaces, annotations stacked on one entity
+  (including one that reads a sibling annotation's path), and that a controller nested inside a
   class is *not* scanned.
 * `test_apps` — end-to-end: the loader loads the real DLLs, they register through `fut_ctx`, and
   the routes are driven exactly like the server does.

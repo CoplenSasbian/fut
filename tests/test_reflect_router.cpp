@@ -24,13 +24,12 @@ struct mul_out { int result{}; };
 struct raw_out { std::string method{}; std::string target{}; };
 struct who_dto { std::string app{"demo"}; int n{3}; };
 
-// ---- a derived annotation: inherits controller, adds its own route ----
+// ---- composition by stacking: two independent annotations on one class ----
 //
-// operation() is NOT virtual (templates cannot be virtual, and a polymorphic
-// annotation value cannot be read back from the reflection database). The
-// scanner calls operation() on the annotation's static type, so a derived
-// annotation simply overrides it by name and calls the base explicitly:
-// compile-time composition, no dispatch involved.
+// No inheritance and no base calls. Each annotation is a separate opinion
+// about the class; they are applied in declaration order. When one needs
+// data another carries, it reads it from the shared entity -- the entity is
+// the composition context.
 
 struct health_dto { bool ok{true}; };
 
@@ -38,20 +37,19 @@ asio::awaitable<fut::response> health_route(const fut::request&, const fut::path
     co_return fut::json(health_dto{});
 }
 
-struct with_health : fut::controller {
-    constexpr with_health() = default;
-    constexpr with_health(std::string_view p) : fut::controller(p) {}
-
+// Adds <controller path>/health to whatever class it is put on.
+struct health : fut::scannable {
     template <std::meta::info Entity>
     void operation(fut::fut_ctx* ctx) const {
-        fut::controller::operation<Entity>(ctx);   // the inherited routes
-
-        // ... plus one of its own, composed from the same class path
-        const fut::http::router_module* rm = fut::http::router_of(ctx);
-        if (!rm || !rm->add_route) return;
-        rm->add_route(rm->self, fut::method::GET,
-                      fut::join_path(ctx->app_prefix, this->path.view(), "/health"),
-                      &health_route);
+        constexpr auto controller_ann = fut::ann::first<fut::controller>(Entity);
+        if constexpr (controller_ann != std::meta::info{}) {
+            constexpr auto controller_value = [: std::meta::constant_of(controller_ann) :];
+            const fut::http::router_module* rm = fut::http::router_of(ctx);
+            if (!rm || !rm->add_route) return;
+            rm->add_route(rm->self, fut::method::GET,
+                          fut::join_path(ctx->app_prefix, controller_value.path.view(), "/health"),
+                          &health_route);
+        }
     }
 };
 
@@ -124,7 +122,7 @@ struct always_health : fut::scannable {
 
 struct [[=always_health{}]] app_marker {};
 
-struct [[=with_health("/mon")]] monitored_controller {
+struct [[=fut::controller("/mon")]] [[=health{}]] monitored_controller {
     [[=fut::http_get("/ping")]]
     asio::awaitable<greet_out> ping() { co_return greet_out{"monitored"}; }
 };
@@ -255,20 +253,21 @@ TEST_CASE("an entity-agnostic annotation is dispatched too") {
     CHECK(v->ok == true);
 }
 
-TEST_CASE("a derived annotation composes the base operation") {
+TEST_CASE("stacked annotations compose through the shared entity") {
     harness h{"/api/demo"};
 
-    // inherited behaviour: the member route comes from controller::operation
+    // the controller annotation owns the member route
     const auto ping = drive(h.s, fut::method::GET, "/api/demo/mon/ping");
     CHECK(ping.status == 200);
     const auto v = fut::parse<greet_out>(ping.body);
     REQUIRE(v.has_value());
     CHECK(v->hi == "monitored");
 
-    // its own behaviour: the extra route registered after the base call
-    const auto health = drive(h.s, fut::method::GET, "/api/demo/mon/health");
-    CHECK(health.status == 200);
-    const auto ok = fut::parse<health_dto>(health.body);
+    // the peer annotation added its own route, using the controller's path
+    // that it read from the same entity
+    const auto res = drive(h.s, fut::method::GET, "/api/demo/mon/health");
+    CHECK(res.status == 200);
+    const auto ok = fut::parse<health_dto>(res.body);
     REQUIRE(ok.has_value());
     CHECK(ok->ok == true);
 }

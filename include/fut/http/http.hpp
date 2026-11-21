@@ -6,6 +6,7 @@
 //
 // brings in the whole HTTP annotation stack:
 //
+//   fut/annotations.hpp    generic annotation queries (fut::ann::of/first/has)
 //   fut/http/route.hpp     request/response, method enum, path matching
 //   fut/http/router.hpp    the router module interface (add_route)
 //   fut/http/bind.hpp      from_body / from_query / from_path / from_header

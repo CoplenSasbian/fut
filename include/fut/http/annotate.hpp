@@ -3,9 +3,9 @@
 // fut/http/annotate.hpp -- the HTTP annotations.
 //
 // http_action{path, method} is the verb data; http_get() etc. are constexpr
-// functions returning http_action values. GCC records the annotation type of
-// such a value as "const http_action", so detection filters on ^^const
-// http_action.
+// functions returning http_action values. Verb detection goes through
+// fut::ann::of<http_action>(), which is cv-agnostic (GCC records such a value
+// as "const http_action", which callers never see).
 //
 // fut::controller derives fut::scannable: the global scanner (fut/scan.hpp)
 // finds controller-annotated CLASS TYPES, materialises the annotation value
@@ -34,6 +34,7 @@
 
 #include <meta>
 
+#include <fut/annotations.hpp>
 #include <fut/http/invoke.hpp>
 #include <fut/http/route.hpp>
 #include <fut/http/router.hpp>
@@ -99,9 +100,8 @@ struct controller : scannable {
             if constexpr (std::meta::is_class_member(member) &&
                           std::meta::is_function(member)) {
                 // One route per http_action annotation on this method.
-                template for (constexpr std::meta::info verb_ann : std::define_static_array(
-                                  std::meta::annotations_of_with_type(
-                                      member, ^^const fut::http_action))) {
+                template for (constexpr std::meta::info verb_ann :
+                              std::define_static_array(::fut::ann::of<http_action>(member))) {
                     constexpr auto verb = [: std::meta::constant_of(verb_ann) :];
                     const std::string pattern =
                         ::fut::join_path(app_prefix, class_path, verb.path.view());

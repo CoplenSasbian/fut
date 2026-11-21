@@ -25,6 +25,7 @@
 
 #include <cstdint>
 
+#include <fut/annotations.hpp>
 #include <fut/ctx.hpp>
 #include <fut/export.hpp>
 #include <fut/scannable.hpp>
