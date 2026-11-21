@@ -14,6 +14,29 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# ---- compiler / vcpkg ABI agreement --------------------------------------
+# vcpkg packages are ABI-specific. A MinGW build that links MSVC-built
+# packages fails deep inside the linker with messages like
+#   undefined reference to 'fprintf'
+#   undefined reference to '_RTC_InitBase'
+#   undefined reference to '__chkstk'
+# because those symbols belong to the MSVC CRT. Catch the mismatch here,
+# where the fix is a single option.
+if(DEFINED VCPKG_TARGET_TRIPLET AND
+   CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+   NOT VCPKG_TARGET_TRIPLET MATCHES "mingw")
+    message(FATAL_ERROR
+        "fut: this MinGW build would link vcpkg packages built for the MSVC ABI.\n"
+        "  compiler             : ${CMAKE_CXX_COMPILER}\n"
+        "  VCPKG_TARGET_TRIPLET : ${VCPKG_TARGET_TRIPLET}\n"
+        "MinGW needs a mingw triplet such as x64-mingw-dynamic, configure with:\n"
+        "  -DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic\n"
+        "or use a project preset:  cmake --preset release\n"
+        "In an IDE, add both to the CMake profile:\n"
+        "  CMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake\n"
+        "  VCPKG_TARGET_TRIPLET=x64-mingw-dynamic")
+endif()
+
 # ---- dependencies (vcpkg manifest mode, see vcpkg.json / CMakePresets.json) ----
 find_package(Boost CONFIG REQUIRED COMPONENTS asio)
 find_package(llhttp CONFIG REQUIRED)

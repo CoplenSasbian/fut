@@ -83,6 +83,19 @@ cmake --build --preset release
 ctest --preset release
 ```
 
+**In an IDE** (CLion, VS Code, ...) use the project presets — they carry the compiler and the
+vcpkg triplet — or, if you configure manually, pass *both* options:
+
+```
+-DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake
+-DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic
+```
+
+The triplet must match the compiler ABI. A MinGW build linked against MSVC-built vcpkg packages
+fails inside the linker with `undefined reference to 'fprintf'`, `_RTC_InitBase` or `__chkstk`;
+the top-level `CMakeLists.txt` detects that mismatch at configure time and stops with the two
+options to fix it.
+
 Run (from the repository root, which holds `config.json`):
 
 ```bash
