@@ -80,6 +80,30 @@ struct user_name_out { long long id{}; std::string name{}; };
 
 namespace admin {
 
+// ---- app-scoped middleware -------------------------------------------------
+//
+// Registered by a scannable annotation while this app loads, so it wraps
+// every admin route and nothing else. Middleware that must apply to every
+// app belongs to the executable (server_builder::add_middleware) -- an app
+// never reaches outside itself.
+asio::awaitable<fut::response> stamp_app(const fut::request& req,
+                                         const fut::path_match& params,
+                                         const fut::http::next_fn& next) {
+    fut::response res = co_await next(req, params);
+    res.headers.emplace_back("X-Fut-App", "admin");
+    co_return res;
+}
+
+struct app_filter : fut::scannable {
+    template <std::meta::info Entity>
+    void operation(fut::fut_ctx* ctx) const {
+        const fut::http::router_module* rm = fut::http::router_of(ctx);
+        if (rm && rm->add_middleware) rm->add_middleware(rm->self, &stamp_app);
+    }
+};
+
+struct [[=app_filter{}]] filters {};
+
 // The app's general routes: an empty controller path leaves the method
 // patterns exactly as written.
 struct [[=fut::controller{}]] admin_controller {

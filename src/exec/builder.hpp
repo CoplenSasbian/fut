@@ -89,6 +89,15 @@ public:
         return *this;
     }
 
+    // Platform middleware: runs for every request of every app, including
+    // requests that match no route. Registration order = outer to inner.
+    // An app can only add middleware to its own routes (see
+    // fut::http::router_module::add_middleware).
+    server_builder& add_middleware(fut::http::middleware_fn mw) {
+        middlewares_.push_back(std::move(mw));
+        return *this;
+    }
+
     // Loads apps, serves until SIGINT/SIGTERM, returns a process exit code.
     int run();
 
@@ -107,6 +116,7 @@ private:
     std::optional<std::chrono::seconds> timeout_;
     std::optional<std::string> log_level_;
     std::vector<extra_route> extra_routes_;
+    std::vector<fut::http::middleware_fn> middlewares_;
     std::vector<fut::log::chain_options> chains_{default_log_chains()};
 
     // True once the embedder touched the chains: an explicit builder policy

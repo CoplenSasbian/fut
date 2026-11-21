@@ -60,7 +60,8 @@ asio::awaitable<void> write_all(tcp::socket& socket, std::string_view data) {
     co_await asio::async_write(socket, asio::buffer(data), asio::use_awaitable);
 }
 
-// The dispatch step: parsed message -> route -> response.
+// Parsed message -> fut::request. The router owns matching, the middleware
+// chains and the error mapping (400/404/405/500).
 asio::awaitable<fut::response> dispatch(router* rt, const http_request_message& msg) {
     const std::string_view target = msg.target;
     const auto qpos = target.find('?');
@@ -73,18 +74,8 @@ asio::awaitable<fut::response> dispatch(router* rt, const http_request_message& 
     headers.reserve(msg.headers.size());
     for (const auto& [name, value] : msg.headers) headers.emplace_back(name, value);
 
-    const auto method = fut::method_from_string(msg.method);
-    if (!method) co_return fut::error(405, "method not allowed");
-
-    const auto hit = rt->match(*method, path);
-    if (!hit) co_return fut::error(404, "no route");
-
-    try {
-        co_return co_await hit->route->invoke(
-            fut::request{msg.method, target, path, query, msg.body, headers}, hit->params);
-    } catch (const fut::bind_error& e) {
-        co_return fut::error(400, e.what());
-    }
+    co_return co_await rt->dispatch(fut::request{msg.method, target, path, query, msg.body,
+                                                 headers});
 }
 
 asio::awaitable<void> run_session(tcp::socket socket, router* rt,

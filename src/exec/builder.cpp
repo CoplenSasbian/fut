@@ -180,11 +180,16 @@ int server_builder::run() {
         app_loader loader;
         loader.load_dir(apps_dir, rt);
 
+        // Platform middleware wraps everything, so register it first.
+        for (const fut::http::middleware_fn& mw : middlewares_) rt.add_global_middleware(mw);
+
         // Built-in app: the introspection route plus any embedder routes.
         rt.begin_app("core", "/api/core");
         rt.add_route(fut::method::GET, "/api/core/status", &core_status);
         for (const extra_route& r : extra_routes_) rt.add_route(r.method, r.pattern, r.invoke);
         rt.end_app();
+
+        rt.finalize();   // wrap every route with its app's chain
         g_status_router = &rt;
 
         server srv(ioc, cfg.host, cfg.port, rt, timeout);

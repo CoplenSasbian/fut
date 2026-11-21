@@ -8,7 +8,7 @@
 namespace fut {
 
 // Bump when the fut_ctx layout or the app entry contract changes.
-inline constexpr std::uint32_t abi_version = 2;
+inline constexpr std::uint32_t abi_version = 3;
 
 inline constexpr const char* library_version = "0.3.0";
 

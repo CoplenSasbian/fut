@@ -19,6 +19,9 @@ target_include_directories(test_router PRIVATE
     ${PROJECT_SOURCE_DIR}/src/exec
 )
 target_link_libraries(test_router PRIVATE doctest::doctest Boost::asio)
+if(WIN32)
+    target_link_libraries(test_router PRIVATE ws2_32)
+endif()
 doctest_discover_tests(test_router)
 
 # C++26 std::meta 反射

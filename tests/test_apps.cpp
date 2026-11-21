@@ -26,39 +26,36 @@ struct run_state {
     std::exception_ptr err{};
 };
 
-asio::awaitable<void> invoke_into(run_state& st, fut::http::route_fn fn, fut::request req,
-                                  fut::path_match pm) {
+asio::awaitable<void> invoke_into(run_state& st, const fut::exec::router& rt,
+                                  fut::request req) {
     try {
-        st.res = co_await fn(req, pm);
+        st.res = co_await rt.dispatch(req);
     } catch (...) {
         st.err = std::current_exception();
     }
 }
 
-// Dispatches exactly like the server: router match, then invoke.
+// Dispatches exactly like the server: router::dispatch runs the middleware
+// chains, matches, and maps errors (400/404/405/500).
 fut::response run(fut::exec::router& rt, fut::method m, std::string_view path,
                   std::string_view body = {}, std::string_view query = {},
                   std::span<const std::pair<std::string_view, std::string_view>> headers = {}) {
-    const auto hit = rt.match(m, path);
-    if (!hit) return fut::error(404, "no route");
-
     asio::io_context ioc;
     run_state st;
     asio::co_spawn(ioc,
-                   invoke_into(st, hit->route->invoke,
+                   invoke_into(st, rt,
                                fut::request{fut::to_string(m), path, path, query, body,
-                                            headers},
-                               hit->params),
+                                            headers}),
                    [](std::exception_ptr) {});
     ioc.run();
-    if (st.err) {
-        try {
-            std::rethrow_exception(st.err);
-        } catch (const fut::bind_error& e) {
-            return fut::error(400, e.what());
-        }
-    }
+    if (st.err) std::rethrow_exception(st.err);
     return st.res;
+}
+
+bool has_header(const fut::response& res, std::string_view name, std::string_view value) {
+    for (const auto& [k, v] : res.headers)
+        if (k == name && v == value) return true;
+    return false;
 }
 
 const fut::exec::app_loader::entry* find_app(
@@ -80,6 +77,17 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
     fut::exec::app_loader loader;
     const auto apps = loader.load_dir(dir, rt);
     REQUIRE(apps.size() == 2);
+
+    // Platform middleware: belongs to the executable, sees every request.
+    rt.add_global_middleware([](const fut::request& req, const fut::path_match& params,
+                                const fut::http::next_fn& next)
+                                 -> asio::awaitable<fut::response> {
+        if (req.header("x-block") == "1") co_return fut::error(401, "blocked");
+        fut::response res = co_await next(req, params);
+        res.headers.emplace_back("X-Platform", "1");
+        co_return res;
+    });
+    rt.finalize();   // wraps every route with its app's chain
 
     const auto* admin = find_app(apps, "admin");
     const auto* web = find_app(apps, "web");
@@ -266,6 +274,26 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
         CHECK(res.status == 200);
         CHECK(res.content_type.rfind("text/plain", 0) == 0);
         CHECK(res.body == "from namespace web::beta");
+    }
+
+    SUBCASE("platform middleware sees every response, including 404") {
+        const auto ok = run(rt, fut::method::GET, "/api/admin/ping");
+        CHECK(has_header(ok, "X-Platform", "1"));
+
+        const auto missing = run(rt, fut::method::GET, "/api/nope");
+        CHECK(missing.status == 404);
+        CHECK(has_header(missing, "X-Platform", "1"));
+    }
+
+    SUBCASE("platform middleware can short-circuit") {
+        const std::pair<std::string_view, std::string_view> headers[] = {{"x-block", "1"}};
+        const auto res = run(rt, fut::method::GET, "/api/admin/ping", {}, {}, headers);
+        CHECK(res.status == 401);
+    }
+
+    SUBCASE("the admin app's own middleware covers admin routes only") {
+        CHECK(has_header(run(rt, fut::method::GET, "/api/admin/ping"), "X-Fut-App", "admin"));
+        CHECK_FALSE(has_header(run(rt, fut::method::GET, "/api/web/ping"), "X-Fut-App", "admin"));
     }
 
     SUBCASE("unknown route -> 404") {

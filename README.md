@@ -430,6 +430,69 @@ cannot be read back (`reflect_constant failed`). Stacking needs neither.
 annotation-composition problem: annotations describe *which routes exist*, while invocation policy
 wraps a `route_fn`. Put that in the router/invoke layer, not in an annotation's `operation`.
 
+## Middleware and filters
+
+Middleware is a coroutine that either answers the request or continues the chain:
+
+```cpp
+asio::awaitable<fut::response> log_request(const fut::request& req,
+                                          const fut::path_match& params,
+                                          const fut::http::next_fn& next) {
+    const auto start = std::chrono::steady_clock::now();
+    fut::response res = co_await next(req, params);      // or return early
+    res.headers.emplace_back("X-Elapsed-Us", std::to_string(micros_since(start)));
+    co_return res;
+}
+```
+
+**Two scopes, deliberately separate.** An app never reaches outside itself:
+
+| Scope | Registered by | Covers | Example |
+| --- | --- | --- | --- |
+| **platform** | the executable (`server_builder::add_middleware`) | every request of every app, *including 404s* | request log, metrics, CORS, global auth |
+| **app** | one app DLL (`router_module::add_middleware` while it loads) | that app's routes only | tenant check, app-specific headers |
+
+```cpp
+// executable: platform scope
+server_builder().add_middleware(&log_request).run();
+
+// app DLL: app scope, registered by an ordinary scannable annotation
+namespace admin {
+struct app_filter : fut::scannable {
+    template <std::meta::info Entity>
+    void operation(fut::fut_ctx* ctx) const {
+        const fut::http::router_module* rm = fut::http::router_of(ctx);
+        if (rm && rm->add_middleware) rm->add_middleware(rm->self, &stamp_app);
+    }
+};
+struct [[=app_filter{}]] filters {};
+}
+```
+
+**Why not cross-app?** Apps are independent deployment units: an app's DLL is swapped without
+rebuilding anything else, and a middleware registered by one app must not silently change another
+app's behaviour. Platform-wide policy therefore belongs to the executable, and the router keeps the
+two chains apart.
+
+**Order** is platform (registration order, outermost) → matching → app (registration order) → the
+route handler. A middleware may short-circuit (returning a `fut::response` without calling
+`next`), rewrite the response, or both:
+
+```bash
+curl -D- -o /dev/null http://127.0.0.1:8080/api/admin/ping
+# HTTP/1.1 200 OK
+# X-Fut-App: admin            <- the admin app's own middleware
+# X-Fut-Elapsed-Us: 46        <- platform middleware (also present on 404s)
+```
+
+Two implementation notes:
+
+* the chains are assembled by `router::finalize()` once, after every app is loaded, so dispatch
+  costs one lookup per request;
+* an app middleware crosses the DLL boundary as a **function pointer** (`fut::http::middleware_hook`),
+  not as a `std::function`: a callable constructed inside a DLL would otherwise be destroyed after
+  the DLL is unloaded. The executable wraps the pointer in its own `std::function`.
+
 ## Parameter binding
 
 | Parameter annotation | Source |
@@ -527,6 +590,7 @@ int main() {
         .request_timeout(std::chrono::seconds{30})
         .log_level("debug")
         .add_route(fut::method::GET, "/health", &health)   // in-process route, no DLL
+        .add_middleware(&log_request)                      // platform-wide, sees every request
         .run();                       // blocks until SIGINT/SIGTERM
 }
 ```
@@ -708,7 +772,7 @@ fut/
 │   ├── http_message.*      owned request message + response serialization
 │   └── builder/server/router/app_loader/config/log/main
 ├── apps/admin | apps/web   sample apps (controller style)
-└── tests/                  doctest suite (55 cases)
+└── tests/                  doctest suite (58 cases)
 ```
 
 ## Configuration (config.json)
@@ -726,7 +790,7 @@ fut/
 ## Tests
 
 ```bash
-ctest --preset release   # 55 cases
+ctest --preset release   # 58 cases
 ```
 
 * `test_router` — registration, app bookkeeping, full-path matching, literal-over-placeholder
@@ -743,4 +807,6 @@ ctest --preset release   # 55 cases
   requests, keep-alive rules (HTTP/1.0 vs 1.1, `Connection`), rejects garbage, header lookup.
 * `test_form` — urlencoded and multipart parsing: decoding, quoted boundaries, empty file parts,
   malformed bodies reported with a reason, Content-Type dispatch.
+* `test_router` also covers the middleware pipeline: platform chain wrapping matched routes and
+  404s, short-circuiting, rewriting, and app chains staying inside their app.
 * `test_log`, `test_reflect` — logging chains and std::meta utilities.
