@@ -318,6 +318,51 @@ struct [[=fut::my_annotation{.priority = 5}]] some_class { ... };
 The scanner needs no change, `add_app` needs no change, and the new annotation can live in any
 module (including one that never includes the HTTP headers).
 
+### Composing annotations
+
+`operation` is deliberately **not** virtual, and it cannot be:
+
+* C++ forbids virtual function templates (`error: templates may not be 'virtual'`), and
+  `operation` must be templated on `Entity` — splicing a specific class's members needs a
+  compile-time entity.
+* An annotation value has to be a structural (vptr-free) constant. A polymorphic annotation type
+  is accepted at the `[[= ... ]]` site but `std::meta::constant_of` then fails with
+  `reflect_constant failed`, so the scanner could never read it back.
+
+None of that is a limitation in practice, because the scanner already dispatches on the static
+type: it materialises the annotation value and calls `self.operation<Entity>(ctx)`. A derived
+annotation simply provides its own `operation` and calls the base explicitly:
+
+```cpp
+struct with_health : fut::controller {                  // inherits path + registration
+    constexpr with_health() = default;
+    constexpr with_health(std::string_view p) : fut::controller(p) {}
+
+    template <std::meta::info Entity>
+    void operation(fut::fut_ctx* ctx) const {
+        fut::controller::operation<Entity>(ctx);        // the inherited routes
+
+        const fut::http::router_module* rm = fut::http::router_of(ctx);
+        rm->add_route(rm->self, fut::method::GET,
+                      fut::join_path(ctx->app_prefix, this->path.view(), "/health"),
+                      &health_route);                   // ... plus its own
+    }
+};
+
+struct [[=with_health("/mon")]] monitored_controller {
+    [[=fut::http_get("/ping")]]
+    asio::awaitable<greet_out> ping();                  // -> GET /api/<app>/mon/ping
+};                                                      // -> GET /api/<app>/mon/health
+```
+
+Two more composition styles need no machinery at all:
+
+* **stack annotations** — the scanner calls *every* scannable annotation on an entity, so
+  `struct [[=fut::controller("/a")]] [[=fut::my_extra{}]] C { ... };` runs both, in declaration
+  order;
+* **multiple inheritance** — `struct combined : fut::controller, fut::my_extra { ... };` then call
+  each base's `operation<Entity>(ctx)` in the order you want.
+
 ## Parameter binding
 
 | Parameter annotation | Source |

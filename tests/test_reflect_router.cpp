@@ -24,6 +24,37 @@ struct mul_out { int result{}; };
 struct raw_out { std::string method{}; std::string target{}; };
 struct who_dto { std::string app{"demo"}; int n{3}; };
 
+// ---- a derived annotation: inherits controller, adds its own route ----
+//
+// operation() is NOT virtual (templates cannot be virtual, and a polymorphic
+// annotation value cannot be read back from the reflection database). The
+// scanner calls operation() on the annotation's static type, so a derived
+// annotation simply overrides it by name and calls the base explicitly:
+// compile-time composition, no dispatch involved.
+
+struct health_dto { bool ok{true}; };
+
+asio::awaitable<fut::response> health_route(const fut::request&, const fut::path_match&) {
+    co_return fut::json(health_dto{});
+}
+
+struct with_health : fut::controller {
+    constexpr with_health() = default;
+    constexpr with_health(std::string_view p) : fut::controller(p) {}
+
+    template <std::meta::info Entity>
+    void operation(fut::fut_ctx* ctx) const {
+        fut::controller::operation<Entity>(ctx);   // the inherited routes
+
+        // ... plus one of its own, composed from the same class path
+        const fut::http::router_module* rm = fut::http::router_of(ctx);
+        if (!rm || !rm->add_route) return;
+        rm->add_route(rm->self, fut::method::GET,
+                      fut::join_path(ctx->app_prefix, this->path.view(), "/health"),
+                      &health_route);
+    }
+};
+
 // ---- controllers covering every binding style ----
 
 namespace demo_actions {
@@ -78,6 +109,11 @@ struct [[=fut::controller{}]] main_controller {
 struct [[=fut::controller("/grp")]] grouped_controller {
     [[=fut::http_get("/first")]]
     asio::awaitable<greet_out> first() { co_return greet_out{"grouped"}; }
+};
+
+struct [[=with_health("/mon")]] monitored_controller {
+    [[=fut::http_get("/ping")]]
+    asio::awaitable<greet_out> ping() { co_return greet_out{"monitored"}; }
 };
 
 namespace nested {
@@ -181,20 +217,42 @@ TEST_SUITE("scanned controller registration") {
 
 TEST_CASE("the scan registers every verb-annotated member, prefix composed") {
     harness h{"/api/demo"};
-    REQUIRE(h.s.routes.size() == 10);  // 8 main + 1 grouped + 1 nested
+    REQUIRE(h.s.routes.size() == 12);  // 8 main + 1 grouped + 1 nested + 2 monitored
 
     CHECK(h.find(fut::method::GET, "/api/demo/ping") != nullptr);
     CHECK(h.find(fut::method::POST, "/api/demo/add") != nullptr);
     CHECK(h.find(fut::method::GET, "/api/demo/mul/{x}/{y}") != nullptr);
     CHECK(h.find(fut::method::GET, "/api/demo/grp/first") != nullptr);   // controller path
     CHECK(h.find(fut::method::GET, "/api/demo/deep/one") != nullptr);    // nested namespace
+
+    // the derived annotation: inherited member route + its own extra route
+    CHECK(h.find(fut::method::GET, "/api/demo/mon/ping") != nullptr);
+    CHECK(h.find(fut::method::GET, "/api/demo/mon/health") != nullptr);
+}
+
+TEST_CASE("a derived annotation composes the base operation") {
+    harness h{"/api/demo"};
+
+    // inherited behaviour: the member route comes from controller::operation
+    const auto ping = drive(h.s, fut::method::GET, "/api/demo/mon/ping");
+    CHECK(ping.status == 200);
+    const auto v = fut::parse<greet_out>(ping.body);
+    REQUIRE(v.has_value());
+    CHECK(v->hi == "monitored");
+
+    // its own behaviour: the extra route registered after the base call
+    const auto health = drive(h.s, fut::method::GET, "/api/demo/mon/health");
+    CHECK(health.status == 200);
+    const auto ok = fut::parse<health_dto>(health.body);
+    REQUIRE(ok.has_value());
+    CHECK(ok->ok == true);
 }
 
 TEST_CASE("the scan does not recurse into classes") {
     harness h{"/api/demo"};
     // 10 routes: the nested controller inside main_controller was skipped,
     // because only namespaces are recursed into.
-    CHECK(h.s.routes.size() == 10);
+    CHECK(h.s.routes.size() == 12);
     CHECK(h.find(fut::method::GET, "/api/demo/inner/hidden") == nullptr);
     CHECK(drive(h.s, fut::method::GET, "/api/demo/inner/hidden").status == 404);
 }
