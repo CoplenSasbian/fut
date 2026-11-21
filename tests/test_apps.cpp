@@ -95,7 +95,7 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
     REQUIRE(web != nullptr);
     CHECK(admin->prefix == "/api/admin");
     CHECK(web->prefix == "/api/web");
-    CHECK(admin->routes == 10);  // 8 flat + 2 inside users_controller
+    CHECK(admin->routes == 11);  // 9 flat + 2 inside users_controller
     CHECK(web->routes == 7);    // 6 flat + 1 inside web::beta
 
     SUBCASE("admin /ping") {
@@ -274,6 +274,12 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
         CHECK(res.status == 200);
         CHECK(res.content_type.rfind("text/plain", 0) == 0);
         CHECK(res.body == "from namespace web::beta");
+    }
+
+    SUBCASE("admin /fail/418 -- the action picks the status") {
+        const auto res = run(rt, fut::method::GET, "/api/admin/fail/418");
+        CHECK(res.status == 418);
+        CHECK(res.body.find("requested failure 418") != std::string::npos);
     }
 
     SUBCASE("platform middleware sees every response, including 404") {

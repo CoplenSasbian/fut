@@ -189,6 +189,8 @@ int server_builder::run() {
         for (const extra_route& r : extra_routes_) rt.add_route(r.method, r.pattern, r.invoke);
         rt.end_app();
 
+        if (error_handler_) rt.set_error_handler(error_handler_);
+
         rt.finalize();   // wrap every route with its app's chain
         g_status_router = &rt;
 

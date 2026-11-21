@@ -74,9 +74,16 @@ public:
     void finalize();
 
     // Full pipeline for one request: platform chain -> match -> app chain ->
-    // handler. Turns an unknown method into 405, no match into 404 and a
-    // fut::bind_error into 400.
+    // handler, with the error mapping described in fut/http/error.hpp.
     boost::asio::awaitable<fut::response> dispatch(const fut::request& req) const;
+
+    // Replaces the body written for every error status. The default is
+    // fut::error(), i.e. {"error":"<message>"}. Install it from the
+    // executable (server_builder::on_error) -- it is platform policy, not an
+    // app's.
+    void set_error_handler(std::function<fut::response(unsigned, std::string_view)> handler) {
+        error_handler_ = std::move(handler);
+    }
 
     // The most specific match (most literal segments) wins; registration
     // order breaks ties.
@@ -102,7 +109,9 @@ private:
                                 fut::http::route_fn fn);
     static void add_middleware_thunk(void* self, fut::http::middleware_hook fn);
 
+    boost::asio::awaitable<fut::response> dispatch_chain(const fut::request& req) const;
     boost::asio::awaitable<fut::response> dispatch_matched(const fut::request& req) const;
+    [[nodiscard]] fut::response make_error(unsigned status, std::string_view message) const;
 
     fut::http::router_module module_{this, &add_route_thunk, &add_middleware_thunk};
     std::vector<entry> entries_{};
@@ -110,6 +119,7 @@ private:
     std::vector<fut::http::middleware_fn> global_{};
     std::unordered_map<std::string, std::vector<fut::http::middleware_hook>> app_chains_{};
     std::size_t current_app_ = npos;
+    std::function<fut::response(unsigned, std::string_view)> error_handler_{};
 };
 
 } // namespace fut::exec

@@ -24,6 +24,7 @@
 #include <utility>
 #include <vector>
 
+#include <fut/http/error.hpp>
 #include <fut/http/router.hpp>
 #include <fut/log.hpp>
 
@@ -89,6 +90,14 @@ public:
         return *this;
     }
 
+    // Platform error formatting: replaces the body written for every error
+    // status (default {"error":"<message>"}). Returning a response from here
+    // is how an operator standardises error envelopes across all apps.
+    server_builder& on_error(std::function<fut::response(unsigned, std::string_view)> handler) {
+        error_handler_ = std::move(handler);
+        return *this;
+    }
+
     // Platform middleware: runs for every request of every app, including
     // requests that match no route. Registration order = outer to inner.
     // An app can only add middleware to its own routes (see
@@ -117,6 +126,7 @@ private:
     std::optional<std::string> log_level_;
     std::vector<extra_route> extra_routes_;
     std::vector<fut::http::middleware_fn> middlewares_;
+    std::function<fut::response(unsigned, std::string_view)> error_handler_{};
     std::vector<fut::log::chain_options> chains_{default_log_chains()};
 
     // True once the embedder touched the chains: an explicit builder policy

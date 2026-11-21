@@ -8,6 +8,7 @@
 //
 //   fut/annotations.hpp    generic annotation queries (fut::ann::of/first/has)
 //   fut/http/route.hpp     request/response, method enum, path matching
+//   fut/http/error.hpp     fut::http_error and the named 4xx/5xx helpers
 //   fut/http/router.hpp    the router module interface (add_route)
 //   fut/http/bind.hpp      from_body / from_query / from_path / from_header /
 //                          from_form / from_file
@@ -22,6 +23,7 @@
 // This header only says how HTTP routes are declared.
 
 #include <fut/http/route.hpp>
+#include <fut/http/error.hpp>
 #include <fut/http/router.hpp>
 #include <fut/http/bind.hpp>
 #include <fut/http/form.hpp>

@@ -23,6 +23,8 @@ reflection-free fallback path.
   multipart file uploads, raw request escape hatch
 * Return-type adaptation: `fut::response` passthrough, **plain strings served as text/plain**,
   glaze-serializable DTOs as JSON, anything else is a **compile error**
+* One error mapping for every app: throw `fut::http_error` (or a helper) and the router turns it
+  into the status and body; the executable can reshape the envelope
 * One DLL per app (Django-style); registration through a context, no exported tables
 * Generic scanner: adding a new scannable annotation changes neither the scanner nor CMake
 * Fluent `server_builder` for the host executable (port, threads, timeouts, extra routes, ...)
@@ -493,6 +495,55 @@ Two implementation notes:
   not as a `std::function`: a callable constructed inside a DLL would otherwise be destroyed after
   the DLL is unloaded. The executable wraps the pointer in its own `std::function`.
 
+## Errors
+
+An action is a coroutine, so **throwing is the way out**. The router is the single place that turns
+an exception into a response, which is why every app reports failures the same way:
+
+| What happened | Status | Body (default) |
+| --- | --- | --- |
+| `throw fut::http_error(418, "msg")` | the thrown status | `{"error":"msg"}` |
+| `throw fut::not_found("msg")` (and the other helpers) | 404 | `{"error":"msg"}` |
+| `throw fut::bind_error("msg")` (bad body/query/path/header/form) | 400 | `{"error":"msg"}` |
+| any other `std::exception` | 500 | `{"error":"internal server error"}` — the detail goes to the log, never to the client |
+| a middleware throws | same mapping | — |
+| method unknown | 405 | `{"error":"method not allowed"}` |
+| path exists under another method | 405 | `{"error":"method not allowed"}` |
+| no route at all | 404 | `{"error":"no route"}` |
+
+```cpp
+[[=fut::http_get("/fail/{code}")]]
+asio::awaitable<pong_dto> fail([[=fut::from_path("code")]] int code) {
+    throw fut::http_error(static_cast<unsigned>(code), "requested failure");
+}
+```
+
+```bash
+curl -w " [%{http_code}]" http://127.0.0.1:8080/api/admin/fail/418
+# {"error":"requested failure 418"} [418]
+```
+
+Helpers: `bad_request`, `unauthorized`, `forbidden`, `not_found`, `method_not_allowed`,
+`conflict`, `payload_too_large`, `unsupported_media_type`, `unprocessable`, `too_many_requests`,
+`internal_error`, `unavailable` (all in `fut/http/error.hpp`).
+
+**Reshaping the envelope** is platform policy, not an app's:
+
+```cpp
+server_builder()
+    .on_error([](unsigned status, std::string_view message) {
+        fut::response res;
+        res.status = status;
+        res.body = std::string{"{\"code\":"} + std::to_string(status) +
+                   ",\"detail\":\"" + std::string(message) + "\"}";
+        return res;
+    })
+    .run();
+```
+
+An app that needs its own error shape wraps the response in an app middleware instead (it can
+`try`/`catch` around `co_await next(...)`, since middleware is part of the same chain).
+
 ## Parameter binding
 
 | Parameter annotation | Source |
@@ -757,6 +808,7 @@ fut/
 │   ├── http/
 │   │   ├── http.hpp        one include for the HTTP stack
 │   │   ├── route.hpp       request/response, method enum, path matching, join_path
+│   │   ├── error.hpp       fut::http_error + the named 4xx/5xx helpers
 │   │   ├── router.hpp      router_module: the interface a DLL registers through
 │   │   ├── bind.hpp        from_body / from_query / from_path / from_header /
 │   │   │                    from_form / from_file
@@ -772,7 +824,7 @@ fut/
 │   ├── http_message.*      owned request message + response serialization
 │   └── builder/server/router/app_loader/config/log/main
 ├── apps/admin | apps/web   sample apps (controller style)
-└── tests/                  doctest suite (58 cases)
+└── tests/                  doctest suite (61 cases)
 ```
 
 ## Configuration (config.json)
@@ -790,7 +842,7 @@ fut/
 ## Tests
 
 ```bash
-ctest --preset release   # 58 cases
+ctest --preset release   # 61 cases
 ```
 
 * `test_router` — registration, app bookkeeping, full-path matching, literal-over-placeholder
@@ -807,6 +859,7 @@ ctest --preset release   # 58 cases
   requests, keep-alive rules (HTTP/1.0 vs 1.1, `Connection`), rejects garbage, header lookup.
 * `test_form` — urlencoded and multipart parsing: decoding, quoted boundaries, empty file parts,
   malformed bodies reported with a reason, Content-Type dispatch.
-* `test_router` also covers the middleware pipeline: platform chain wrapping matched routes and
-  404s, short-circuiting, rewriting, and app chains staying inside their app.
+* `test_router` also covers the middleware pipeline (platform chain wrapping matched routes and
+  404s, short-circuiting, rewriting, app chains staying inside their app) and the error mapping
+  (own status, 404/405/400/500, custom `on_error` envelope, a middleware that throws).
 * `test_log`, `test_reflect` — logging chains and std::meta utilities.

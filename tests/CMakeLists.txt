@@ -13,7 +13,10 @@ target_link_libraries(test_log PRIVATE doctest::doctest glaze::glaze)
 doctest_discover_tests(test_log)
 
 # Route registry: registration, matching, specificity
-add_executable(test_router test_router.cpp ${PROJECT_SOURCE_DIR}/src/exec/router.cpp)
+add_executable(test_router test_router.cpp
+    ${PROJECT_SOURCE_DIR}/src/exec/router.cpp
+    ${PROJECT_SOURCE_DIR}/src/exec/log.cpp
+)
 target_include_directories(test_router PRIVATE
     ${PROJECT_SOURCE_DIR}/include
     ${PROJECT_SOURCE_DIR}/src/exec

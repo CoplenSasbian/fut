@@ -5,9 +5,15 @@
 #include <utility>
 #include <vector>
 
+#include <fut/http/error.hpp>
 #include <fut/json.hpp>
+#include <fut/log.hpp>
 
 namespace fut::exec {
+
+namespace {
+constexpr auto router_log = fut::log::grp("router");
+}
 namespace {
 
 namespace asio = boost::asio;
@@ -124,25 +130,36 @@ std::optional<router::hit> router::match(fut::method m, std::string_view path) c
     return hit{best, best_params};
 }
 
-asio::awaitable<fut::response> router::dispatch_matched(const fut::request& req) const {
-    const auto m = fut::method_from_string(req.method);
-    if (!m) co_return fut::error(405, "method not allowed");
-
-    const auto found = match(*m, req.path);
-    if (!found) co_return fut::error(404, "no route");
-
-    try {
-        if (found->route->handler)
-            co_return co_await found->route->handler(req, found->params);
-        co_return co_await found->route->invoke(req, found->params);
-    } catch (const fut::bind_error& e) {
-        co_return fut::error(400, e.what());
-    } catch (const std::exception& e) {
-        co_return fut::error(500, e.what());
-    }
+fut::response router::make_error(unsigned status, std::string_view message) const {
+    if (error_handler_) return error_handler_(status, message);
+    return fut::error(status, message);
 }
 
-asio::awaitable<fut::response> router::dispatch(const fut::request& req) const {
+asio::awaitable<fut::response> router::dispatch_matched(const fut::request& req) const {
+    const auto m = fut::method_from_string(req.method);
+    if (!m) co_return make_error(405, "method not allowed");
+
+    const auto found = match(*m, req.path);
+    if (!found) {
+        // 405 only when the path exists under another method; otherwise 404.
+        bool path_exists = false;
+        for (const entry& e : entries_) {
+            fut::path_match params;
+            if (fut::match_pattern(e.pattern, req.path, params)) {
+                path_exists = true;
+                break;
+            }
+        }
+        co_return path_exists ? make_error(405, "method not allowed")
+                              : make_error(404, "no route");
+    }
+
+    if (found->route->handler)
+        co_return co_await found->route->handler(req, found->params);
+    co_return co_await found->route->invoke(req, found->params);
+}
+
+asio::awaitable<fut::response> router::dispatch_chain(const fut::request& req) const {
     if (global_.empty()) co_return co_await dispatch_matched(req);
 
     // Platform middleware sees every request, including the ones that will
@@ -153,6 +170,27 @@ asio::awaitable<fut::response> router::dispatch(const fut::request& req) const {
     };
     const fut::path_match none{};
     co_return co_await run_chain(global_, 0, terminal, req, none);
+}
+
+// The one place where errors become responses: an action, a middleware or a
+// binding may throw; every app therefore reports failures the same way.
+asio::awaitable<fut::response> router::dispatch(const fut::request& req) const {
+    try {
+        co_return co_await dispatch_chain(req);
+    } catch (const fut::http_error& e) {
+        co_return make_error(e.status(), e.what());
+    } catch (const fut::bind_error& e) {
+        co_return make_error(400, e.what());
+    } catch (const std::exception& e) {
+        // 500: the detail is for the operator, not for the client.
+        router_log.error("unhandled exception on {} {}: {}", std::string(req.method),
+                         std::string(req.target), e.what());
+        co_return make_error(500, "internal server error");
+    } catch (...) {
+        router_log.error("unhandled non-standard exception on {} {}", std::string(req.method),
+                         std::string(req.target));
+        co_return make_error(500, "internal server error");
+    }
 }
 
 } // namespace fut::exec

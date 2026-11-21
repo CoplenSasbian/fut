@@ -58,9 +58,9 @@ struct echo_out {
 
 struct info_dto {
     std::string app{"admin"};
-    std::vector<std::string> routes{"/ping",     "/info", "/meta", "/echo", "/formecho",
-                                    "/whoami",   "/raw",  "/upload", "/users/hits",
-                                    "/users/{id}/name"};
+    std::vector<std::string> routes{"/ping",    "/info",  "/meta",   "/echo", "/formecho",
+                                    "/whoami",  "/raw",   "/upload", "/fail/{code}",
+                                    "/users/hits", "/users/{id}/name"};
 };
 
 struct whoami_dto {
@@ -158,6 +158,14 @@ struct [[=fut::controller{}]] admin_controller {
         for (int i = 1; i <= in.count; ++i) sum += i;
         out.sum = sum;
         co_return out;
+    }
+
+    // Errors: throwing is the way out. The router maps fut::http_error to its
+    // status, bind_error to 400, anything else to 500 (detail only logged).
+    [[=fut::http_get("/fail/{code}")]]
+    asio::awaitable<pong_dto> fail([[=fut::from_path("code")]] int code) {
+        throw fut::http_error(static_cast<unsigned>(code),
+                              "requested failure " + std::to_string(code));
     }
 
     // multipart/form-data: a text field plus an uploaded file

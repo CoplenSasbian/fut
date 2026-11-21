@@ -9,6 +9,7 @@
 
 #include <boost/asio.hpp>
 
+#include <fut/http/error.hpp>
 #include <fut/http/router.hpp>
 #include <fut/json.hpp>
 
@@ -22,6 +23,16 @@ asio::awaitable<fut::response> dummy(const fut::request&, const fut::path_match&
     fut::response res;
     res.body = "handler";
     co_return res;
+}
+
+asio::awaitable<fut::response> throws_teapot(const fut::request&, const fut::path_match&) {
+    throw fut::http_error(418, "teapot says no");
+}
+asio::awaitable<fut::response> throws_not_found(const fut::request&, const fut::path_match&) {
+    throw fut::not_found("gone");
+}
+asio::awaitable<fut::response> throws_boom(const fut::request&, const fut::path_match&) {
+    throw std::runtime_error("secret detail");
 }
 
 struct run_state {
@@ -96,6 +107,70 @@ TEST_CASE("routes added outside an app carry no app name") {
     REQUIRE(rt.entries().size() == 1);
     CHECK(rt.entries()[0].app.empty());
     CHECK(rt.match(fut::method::GET, "/standalone").has_value());
+}
+
+TEST_CASE("errors map to statuses in one place") {
+    fut::exec::router rt;
+    rt.begin_app("x", "/x");
+    rt.add_route(fut::method::GET, "/x/teapot", &throws_teapot);
+    rt.add_route(fut::method::GET, "/x/gone", &throws_not_found);
+    rt.add_route(fut::method::GET, "/x/boom", &throws_boom);
+    rt.add_route(fut::method::GET, "/x/ping", &dummy);
+    rt.end_app();
+    rt.finalize();
+
+    const auto teapot = run(rt, "GET", "/x/teapot");
+    CHECK(teapot.status == 418);
+    CHECK(teapot.body.find("teapot") != std::string::npos);
+
+    const auto gone = run(rt, "GET", "/x/gone");
+    CHECK(gone.status == 404);
+    CHECK(gone.body.find("gone") != std::string::npos);
+
+    // anything else is a 500 and the detail stays out of the response
+    const auto boom = run(rt, "GET", "/x/boom");
+    CHECK(boom.status == 500);
+    CHECK(boom.body.find("secret detail") == std::string::npos);
+    CHECK(boom.body.find("internal server error") != std::string::npos);
+
+    // unknown method / unmatched path
+    CHECK(run(rt, "DELETE", "/x/ping").status == 405);
+    CHECK(run(rt, "GET", "/x/nope").status == 404);
+}
+
+TEST_CASE("the executable can reshape every error body") {
+    fut::exec::router rt;
+    rt.begin_app("x", "/x");
+    rt.add_route(fut::method::GET, "/x/ping", &dummy);
+    rt.end_app();
+    rt.set_error_handler([](unsigned status, std::string_view message) {
+        fut::response res;
+        res.status = status;
+        res.body = "{\"code\":" + std::to_string(status) + ",\"detail\":\"" +
+                   std::string(message) + "\"}";
+        return res;
+    });
+    rt.finalize();
+
+    const auto res = run(rt, "GET", "/x/nope");
+    CHECK(res.status == 404);
+    CHECK(res.body.find("\"code\":404") != std::string::npos);
+}
+
+TEST_CASE("a middleware may throw and the status is still mapped") {
+    fut::exec::router rt;
+    rt.begin_app("x", "/x");
+    rt.add_route(fut::method::GET, "/x/ping", &dummy);
+    rt.end_app();
+    rt.add_global_middleware([](const fut::request&, const fut::path_match&,
+                                const fut::http::next_fn&) -> asio::awaitable<fut::response> {
+        throw fut::unauthorized("no token");
+    });
+    rt.finalize();
+
+    const auto res = run(rt, "GET", "/x/ping");
+    CHECK(res.status == 401);
+    CHECK(res.body.find("no token") != std::string::npos);
 }
 
 TEST_CASE("platform middleware wraps matched routes and 404s") {
