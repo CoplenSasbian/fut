@@ -173,12 +173,20 @@ int server::run() {
         std::filesystem::path apps_dir{cfg.apps_dir};
         if (apps_dir.is_relative()) apps_dir = exe_dir() / apps_dir;
 
+        // Destruction runs in reverse declaration order. The loader is first
+        // so the DLLs are unloaded last: the router holds handlers built from
+        // DLL code, and the io_context may still hold completions whose
+        // handlers live in a DLL. Both must be gone before unload.
+        app_loader loader;
         asio::io_context ioc;
         router rt;
 
+        // The io_context is a service too: an app may want to post work or
+        // start a timer on the server's event loop.
+        modules_.add("io", typeid(asio::io_context).name(), &ioc);
+
         // App DLLs register themselves into the router through the context.
         // Anything the embedder published with add_module() travels with it.
-        app_loader loader;
         loader.load_dir(apps_dir, rt, modules_);
 
         // Platform middleware wraps everything, so register it first.

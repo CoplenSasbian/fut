@@ -63,6 +63,9 @@ struct health : fut::scannable {
 
 namespace demo_actions {
 
+// injected while the namespace is scanned: the pointee type is the key
+[[=fut::inject{}]] boost::asio::io_context* g_io = nullptr;
+
 struct [[=fut::controller{}]] main_controller {
     [[=fut::http_get("/ping")]]
     asio::awaitable<ping_dto> ping() { co_return ping_dto{}; }
@@ -190,19 +193,26 @@ struct sink {
 struct harness {
     sink s{};
     fut::fut_ctx ctx{};
+    asio::io_context ioc{};   // what the "io" module points at
 
     explicit harness(std::string_view prefix) : prefix_storage(prefix) {
-        ctx.host = &s;
+        ctx.host = this;
         ctx.app_name = "demo";
         ctx.app_prefix = prefix_storage;
         ctx.get_module_fn = [](fut::fut_ctx* c, std::string_view name,
                                std::string_view type) -> fut::module_lookup {
-            const bool type_ok = type.empty() ||
-                                 type == typeid(fut::http::router_module).name();
-            if (!type_ok) return {nullptr, fut::module_status::wrong_type};
+            harness* self = static_cast<harness*>(c->host);
+            const bool router_type = type == typeid(fut::http::router_module).name();
+            const bool io_type = type == typeid(asio::io_context).name();
+            if (!type.empty() && !router_type && !io_type)
+                return {nullptr, fut::module_status::wrong_type};
+
+            if (io_type || name == "io")
+                return {&self->ioc, fut::module_status::found};
+
             const bool name_ok = name.empty() || name == "router";
             if (!name_ok) return {nullptr, fut::module_status::not_found};
-            return {&static_cast<sink*>(c->host)->module, fut::module_status::found};
+            return {&self->s.module, fut::module_status::found};
         };
         fut::scan::run<^^demo_actions>(&ctx);
     }
@@ -330,6 +340,13 @@ TEST_CASE("stacked annotations compose through the shared entity") {
     const auto ok = fut::parse<health_dto>(res.body);
     REQUIRE(ok.has_value());
     CHECK(ok->ok == true);
+}
+
+TEST_CASE("a namespace variable is injected from the context") {
+    harness h{"/api/demo"};
+    // the scanner assigned the pointer while it walked the namespace
+    REQUIRE(demo_actions::g_io != nullptr);
+    CHECK(demo_actions::g_io == &h.ioc);
 }
 
 TEST_CASE("the scan does not recurse into classes") {

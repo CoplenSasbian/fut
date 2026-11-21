@@ -548,6 +548,50 @@ fut::exec::server()
 An app that needs its own error shape wraps the response in an app middleware instead (it can
 `try`/`catch` around `co_await next(...)`, since middleware is part of the same chain).
 
+## Services and injection
+
+The context also publishes *services*: objects the server owns and an app may need. They are
+registered under a type and a name (see *How an app is loaded*), and the executable adds its own
+with `server_builder::add_module`:
+
+```cpp
+server().add_module("cache", &cache)             // keyed by typeid(cache)
+        .add_module("primary", &store_a)         // two stores: the name disambiguates
+        .add_module("archive", &store_b)
+        .run();
+```
+
+The io_context is published automatically, so an action can post work or start a timer on the
+server's loop:
+
+```cpp
+namespace admin {
+[[=fut::inject{}]] boost::asio::io_context* g_io = nullptr;   // assigned while the app loads
+}
+
+[[=fut::http_get("/io")]]
+asio::awaitable<io_dto> io() {
+    asio::steady_timer timer(*g_io);              // the server's own loop
+    timer.expires_after(std::chrono::milliseconds(1));
+    co_await timer.async_wait(asio::use_awaitable);
+    co_return io_dto{true, true};
+}
+```
+
+`fut::inject` (`fut/inject.hpp`) fills a namespace-scope **pointer** from the context; the pointee
+type is the lookup key. Pointers only: a reference has to be bound at its declaration, which is a
+moment the scanner does not control. A missing or ambiguous module makes registration fail loudly
+instead of leaving a null behind.
+
+Two lifetime rules, both enforced by tests:
+
+* the `app_loader` must be declared **before** the router and the io_context, so the DLLs are
+  unloaded last — the router holds handlers built from DLL code, and the io_context may still hold
+  completions whose handlers live in a DLL;
+* `io_context::running_in_this_thread()` is **not usable from inside a DLL**: asio tracks "am I
+  inside run()" in a per-module thread-local, so the DLL reads a different copy and always gets
+  `false`. Prove the loop is live by scheduling something on it (the timer above) instead.
+
 ## Parameter binding
 
 | Parameter annotation | Source |
@@ -808,6 +852,7 @@ fut/
 ├── cmake/fut.cmake         the add_app(name, prefix, sources...) helper
 ├── include/fut/
 │   ├── annotations.hpp     generic annotation queries (fut::ann::of / first / has)
+│   ├── inject.hpp          fut::inject: fill a namespace pointer from the ctx
 │   ├── ctx.hpp             fut_ctx: module lookup, the server <-> module contract
 │   ├── scannable.hpp       "the scanner calls my operation()" (global)
 │   ├── scan.hpp            the generic namespace scanner (global, not HTTP)
@@ -833,7 +878,7 @@ fut/
 │   ├── http_message.*      owned request message + response serialization
 │   └── builder/server/router/app_loader/config/log/main
 ├── apps/admin | apps/web   sample apps (controller style)
-└── tests/                  doctest suite (62 cases)
+└── tests/                  doctest suite (63 cases)
 ```
 
 ## Configuration (config.json)
@@ -851,7 +896,7 @@ fut/
 ## Tests
 
 ```bash
-ctest --preset release   # 62 cases
+ctest --preset release   # 63 cases
 ```
 
 * `test_router` — registration, app bookkeeping, full-path matching, literal-over-placeholder

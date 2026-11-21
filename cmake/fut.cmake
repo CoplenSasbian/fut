@@ -101,6 +101,11 @@ function(add_app name prefix)
         ${CMAKE_CURRENT_SOURCE_DIR})
 
     target_link_libraries(${target} PRIVATE Boost::asio glaze::glaze)
+    if(WIN32)
+        # Winsock: an app that touches asio's networking types (an injected
+        # io_context, for instance) needs it at link time.
+        target_link_libraries(${target} PRIVATE ws2_32)
+    endif()
     target_compile_definitions(${target} PRIVATE
         FUT_APP_NAME="${name}"
         FUT_APP_PREFIX="${prefix}"

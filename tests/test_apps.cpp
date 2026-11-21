@@ -15,6 +15,7 @@
 #include <fut/json.hpp>
 
 #include "app_loader.hpp"
+#include "module_registry.hpp"
 #include "router.hpp"
 
 namespace asio = boost::asio;
@@ -25,6 +26,10 @@ struct run_state {
     fut::response res{};
     std::exception_ptr err{};
 };
+
+// The loop the tests drive requests on, exactly like the server owns one: it
+// is registered as the "io" module, so an injected io_context* in an app
+// points at the loop that runs the action.
 
 asio::awaitable<void> invoke_into(run_state& st, const fut::exec::router& rt,
                                   fut::request req) {
@@ -37,11 +42,12 @@ asio::awaitable<void> invoke_into(run_state& st, const fut::exec::router& rt,
 
 // Dispatches exactly like the server: router::dispatch runs the middleware
 // chains, matches, and maps errors (400/404/405/500).
-fut::response run(fut::exec::router& rt, fut::method m, std::string_view path,
-                  std::string_view body = {}, std::string_view query = {},
+fut::response run(asio::io_context& ioc, fut::exec::router& rt, fut::method m,
+                  std::string_view path, std::string_view body = {},
+                  std::string_view query = {},
                   std::span<const std::pair<std::string_view, std::string_view>> headers = {}) {
-    asio::io_context ioc;
     run_state st;
+    ioc.restart();   // run() stops the context when it drains
     asio::co_spawn(ioc,
                    invoke_into(st, rt,
                                fut::request{fut::to_string(m), path, path, query, body,
@@ -73,9 +79,14 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
     const char* dir = std::getenv("FUT_APPS_DIR");
     REQUIRE(dir != nullptr);
 
-    fut::exec::router rt;
+    // Declared first, destroyed last: the DLLs stay loaded until the router
+    // and the io_context (which may hold DLL handlers) are gone.
     fut::exec::app_loader loader;
-    const auto apps = loader.load_dir(dir, rt);
+    asio::io_context ioc;   // the loop this test case owns
+    fut::exec::router rt;
+    fut::exec::module_registry modules;
+    modules.add("io", typeid(asio::io_context).name(), &ioc);
+    const auto apps = loader.load_dir(dir, rt, modules);
     REQUIRE(apps.size() == 2);
 
     // Platform middleware: belongs to the executable, sees every request.
@@ -95,12 +106,12 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
     REQUIRE(web != nullptr);
     CHECK(admin->prefix == "/api/admin");
     CHECK(web->prefix == "/api/web");
-    CHECK(admin->routes == 11);  // 9 flat + 2 inside users_controller
+    CHECK(admin->routes == 12);  // 10 flat + 2 inside users_controller
     CHECK(web->routes == 7);    // 6 flat + 1 inside web::beta
 
     SUBCASE("admin /ping") {
         struct pong { bool pong{}; std::string app{}; };
-        const auto res = run(rt, fut::method::GET, "/api/admin/ping");
+        const auto res = run(ioc, rt, fut::method::GET, "/api/admin/ping");
         CHECK(res.status == 200);
         const auto v = fut::parse<pong>(res.body);
         REQUIRE(v.has_value());
@@ -111,7 +122,7 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
     SUBCASE("admin /echo -- body roundtrip") {
         struct echo_out { std::string message{}; int doubled{}; long long sum{}; };
         const auto res =
-            run(rt, fut::method::POST, "/api/admin/echo", R"({"message":"hi","count":4})");
+            run(ioc, rt, fut::method::POST, "/api/admin/echo", R"({"message":"hi","count":4})");
         CHECK(res.status == 200);
         const auto v = fut::parse<echo_out>(res.body);
         REQUIRE(v.has_value());
@@ -124,7 +135,7 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
         struct echo_out { std::string message{}; int doubled{}; long long sum{}; };
         const std::pair<std::string_view, std::string_view> headers[] = {
             {"Content-Type", "application/x-www-form-urlencoded"}};
-        const auto res = run(rt, fut::method::POST, "/api/admin/formecho",
+        const auto res = run(ioc, rt, fut::method::POST, "/api/admin/formecho",
                              "message=hi&count=4", {}, headers);
         CHECK(res.status == 200);
         const auto v = fut::parse<echo_out>(res.body);
@@ -155,7 +166,7 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
         const std::pair<std::string_view, std::string_view> headers[] = {
             {"Content-Type", "multipart/form-data; boundary=fut"}};
 
-        const auto res = run(rt, fut::method::POST, "/api/admin/upload", body, {}, headers);
+        const auto res = run(ioc, rt, fut::method::POST, "/api/admin/upload", body, {}, headers);
         CHECK(res.status == 200);
         const auto v = fut::parse<upload_out>(res.body);
         REQUIRE(v.has_value());
@@ -166,13 +177,13 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
     }
 
     SUBCASE("admin /echo -- invalid JSON -> 400") {
-        CHECK(run(rt, fut::method::POST, "/api/admin/echo", "not-json").status == 400);
+        CHECK(run(ioc, rt, fut::method::POST, "/api/admin/echo", "not-json").status == 400);
     }
 
     SUBCASE("admin /meta -- C++26 std::meta member enumeration") {
         struct member_row { std::string name{}; std::string value_kind{}; };
         struct meta_dto { std::vector<member_row> members{}; std::vector<std::string> names{}; };
-        const auto res = run(rt, fut::method::GET, "/api/admin/meta");
+        const auto res = run(ioc, rt, fut::method::GET, "/api/admin/meta");
         CHECK(res.status == 200);
         const auto v = fut::parse<meta_dto>(res.body);
         REQUIRE(v.has_value());
@@ -190,7 +201,7 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
 
     SUBCASE("admin /whoami -- DTO return auto-serialization") {
         struct who { std::string app{}; std::string user{}; };
-        const auto res = run(rt, fut::method::GET, "/api/admin/whoami");
+        const auto res = run(ioc, rt, fut::method::GET, "/api/admin/whoami");
         CHECK(res.status == 200);
         const auto v = fut::parse<who>(res.body);
         REQUIRE(v.has_value());
@@ -199,7 +210,7 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
     }
 
     SUBCASE("admin /raw -- string action served as text/plain") {
-        const auto res = run(rt, fut::method::GET, "/api/admin/raw");
+        const auto res = run(ioc, rt, fut::method::GET, "/api/admin/raw");
         CHECK(res.status == 200);
         CHECK(res.content_type.rfind("text/plain", 0) == 0);
         CHECK(res.body.find("fut admin app") == 0);
@@ -207,11 +218,11 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
 
     SUBCASE("admin /users/hits -- controller instance state") {
         struct hits_out { std::uint64_t hits{}; };
-        const auto r1 = run(rt, fut::method::GET, "/api/admin/users/hits");
+        const auto r1 = run(ioc, rt, fut::method::GET, "/api/admin/users/hits");
         CHECK(r1.status == 200);
         const auto v1 = fut::parse<hits_out>(r1.body);
         REQUIRE(v1.has_value());
-        const auto r2 = run(rt, fut::method::GET, "/api/admin/users/hits");
+        const auto r2 = run(ioc, rt, fut::method::GET, "/api/admin/users/hits");
         const auto v2 = fut::parse<hits_out>(r2.body);
         REQUIRE(v2.has_value());
         // one instance per DLL: the counter advances between calls
@@ -220,7 +231,7 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
 
     SUBCASE("admin /users/7/name -- controller path + placeholder") {
         struct name_out { long long id{}; std::string name{}; };
-        const auto res = run(rt, fut::method::GET, "/api/admin/users/7/name");
+        const auto res = run(ioc, rt, fut::method::GET, "/api/admin/users/7/name");
         CHECK(res.status == 200);
         const auto v = fut::parse<name_out>(res.body);
         REQUIRE(v.has_value());
@@ -230,7 +241,7 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
 
     SUBCASE("web /hello?name=fut -- query binding") {
         struct hello { std::string hello{}; };
-        const auto res = run(rt, fut::method::GET, "/api/web/hello", "", "name=fut");
+        const auto res = run(ioc, rt, fut::method::GET, "/api/web/hello", "", "name=fut");
         CHECK(res.status == 200);
         const auto v = fut::parse<hello>(res.body);
         REQUIRE(v.has_value());
@@ -240,7 +251,7 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
     SUBCASE("web /calc -- body DTO binding") {
         struct calc_out { double result{}; std::string op{}; };
         const auto res =
-            run(rt, fut::method::POST, "/api/web/calc", R"({"a":6,"b":7,"op":"mul"})");
+            run(ioc, rt, fut::method::POST, "/api/web/calc", R"({"a":6,"b":7,"op":"mul"})");
         CHECK(res.status == 200);
         const auto v = fut::parse<calc_out>(res.body);
         REQUIRE(v.has_value());
@@ -249,13 +260,13 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
     }
 
     SUBCASE("web /calc -- division by zero -> 400") {
-        CHECK(run(rt, fut::method::POST, "/api/web/calc", R"({"a":6,"b":0,"op":"div"})").status ==
+        CHECK(run(ioc, rt, fut::method::POST, "/api/web/calc", R"({"a":6,"b":0,"op":"div"})").status ==
               400);
     }
 
     SUBCASE("web /sum/6/7 -- path placeholder binding") {
         struct sum_out { long long a{}; long long b{}; long long sum{}; };
-        const auto res = run(rt, fut::method::GET, "/api/web/sum/6/7");
+        const auto res = run(ioc, rt, fut::method::GET, "/api/web/sum/6/7");
         CHECK(res.status == 200);
         const auto v = fut::parse<sum_out>(res.body);
         REQUIRE(v.has_value());
@@ -263,48 +274,61 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
     }
 
     SUBCASE("web /note -- string action") {
-        const auto res = run(rt, fut::method::GET, "/api/web/note");
+        const auto res = run(ioc, rt, fut::method::GET, "/api/web/note");
         CHECK(res.status == 200);
         CHECK(res.content_type.rfind("text/plain", 0) == 0);
         CHECK(res.body.find("fut web app") == 0);
     }
 
     SUBCASE("web /beta/note -- controller in a nested namespace") {
-        const auto res = run(rt, fut::method::GET, "/api/web/beta/note");
+        const auto res = run(ioc, rt, fut::method::GET, "/api/web/beta/note");
         CHECK(res.status == 200);
         CHECK(res.content_type.rfind("text/plain", 0) == 0);
         CHECK(res.body == "from namespace web::beta");
     }
 
+    SUBCASE("admin /io -- the injected io_context is the live server loop") {
+        struct io_dto {
+            bool injected{};
+            bool timer_fired{};
+        };
+        const auto res = run(ioc, rt, fut::method::GET, "/api/admin/io");
+        CHECK(res.status == 200);
+        const auto v = fut::parse<io_dto>(res.body);
+        REQUIRE(v.has_value());
+        CHECK(v->injected);
+        CHECK(v->timer_fired);   // the timer fired on the injected loop
+    }
+
     SUBCASE("admin /fail/418 -- the action picks the status") {
-        const auto res = run(rt, fut::method::GET, "/api/admin/fail/418");
+        const auto res = run(ioc, rt, fut::method::GET, "/api/admin/fail/418");
         CHECK(res.status == 418);
         CHECK(res.body.find("requested failure 418") != std::string::npos);
     }
 
     SUBCASE("platform middleware sees every response, including 404") {
-        const auto ok = run(rt, fut::method::GET, "/api/admin/ping");
+        const auto ok = run(ioc, rt, fut::method::GET, "/api/admin/ping");
         CHECK(has_header(ok, "X-Platform", "1"));
 
-        const auto missing = run(rt, fut::method::GET, "/api/nope");
+        const auto missing = run(ioc, rt, fut::method::GET, "/api/nope");
         CHECK(missing.status == 404);
         CHECK(has_header(missing, "X-Platform", "1"));
     }
 
     SUBCASE("platform middleware can short-circuit") {
         const std::pair<std::string_view, std::string_view> headers[] = {{"x-block", "1"}};
-        const auto res = run(rt, fut::method::GET, "/api/admin/ping", {}, {}, headers);
+        const auto res = run(ioc, rt, fut::method::GET, "/api/admin/ping", {}, {}, headers);
         CHECK(res.status == 401);
     }
 
     SUBCASE("the admin app's own middleware covers admin routes only") {
-        CHECK(has_header(run(rt, fut::method::GET, "/api/admin/ping"), "X-Fut-App", "admin"));
-        CHECK_FALSE(has_header(run(rt, fut::method::GET, "/api/web/ping"), "X-Fut-App", "admin"));
+        CHECK(has_header(run(ioc, rt, fut::method::GET, "/api/admin/ping"), "X-Fut-App", "admin"));
+        CHECK_FALSE(has_header(run(ioc, rt, fut::method::GET, "/api/web/ping"), "X-Fut-App", "admin"));
     }
 
     SUBCASE("unknown route -> 404") {
-        CHECK(run(rt, fut::method::GET, "/api/admin/nope").status == 404);
-        CHECK(run(rt, fut::method::GET, "/api/web/nope").status == 404);
+        CHECK(run(ioc, rt, fut::method::GET, "/api/admin/nope").status == 404);
+        CHECK(run(ioc, rt, fut::method::GET, "/api/web/nope").status == 404);
     }
 }
 

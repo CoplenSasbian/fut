@@ -43,6 +43,10 @@ public:
     // Throws std::runtime_error if the directory does not exist. Routes are
     // registered into `rt` while loading; the DLLs stay loaded until
     // unload_all() (their route functions live in them).
+    //
+    // Lifetime: declare the loader BEFORE the router. Destruction is reverse
+    // order, so the router -- which holds handlers and middleware built from
+    // the DLLs' code -- must be destroyed first; the loader then unloads last.
     std::vector<entry> load_dir(const std::filesystem::path& dir, router& rt,
                                 module_registry modules = {});
 

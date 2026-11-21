@@ -15,6 +15,10 @@
 // FUT_APP_PREFIX compile definition, so the DLL composes full paths itself.
 
 #include <atomic>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <type_traits>
@@ -60,7 +64,7 @@ struct info_dto {
     std::string app{"admin"};
     std::vector<std::string> routes{"/ping",    "/info",  "/meta",   "/echo", "/formecho",
                                     "/whoami",  "/raw",   "/upload", "/fail/{code}",
-                                    "/users/hits", "/users/{id}/name"};
+                                    "/io",      "/users/hits", "/users/{id}/name"};
 };
 
 struct whoami_dto {
@@ -79,6 +83,17 @@ struct hits_out { std::uint64_t hits{}; };
 struct user_name_out { long long id{}; std::string name{}; };
 
 namespace admin {
+
+// ---- injected services -----------------------------------------------------
+//
+// The scanner assigns this while the app registers: the pointee type is the
+// module key, so this points at the server's own io_context.
+[[=fut::inject{}]] boost::asio::io_context* g_io = nullptr;
+
+struct io_dto {
+    bool injected{false};
+    bool timer_fired{false};
+};
 
 // ---- app-scoped middleware -------------------------------------------------
 //
@@ -159,6 +174,20 @@ struct [[=fut::controller{}]] admin_controller {
         for (int i = 1; i <= in.count; ++i) sum += i;
         out.sum = sum;
         co_return out;
+    }
+
+    // Proof that the injected pointer is the live event loop: a timer created
+    // on it can only fire if that loop is actually running. (Do not use
+    // io_context::running_in_this_thread() for this -- its "am I inside run()"
+    // marker is a per-module thread-local, so from inside a DLL it reads a
+    // different copy and always says no.)
+    [[=fut::http_get("/io")]]
+    asio::awaitable<io_dto> io() {
+        if (g_io == nullptr) co_return io_dto{false, false};
+        asio::steady_timer timer(*g_io);
+        timer.expires_after(std::chrono::milliseconds(1));
+        co_await timer.async_wait(asio::use_awaitable);
+        co_return io_dto{true, true};
     }
 
     // Errors: throwing is the way out. The router maps fut::http_error to its
