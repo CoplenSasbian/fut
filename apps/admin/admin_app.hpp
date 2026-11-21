@@ -58,8 +58,8 @@ struct echo_out {
 
 struct info_dto {
     std::string app{"admin"};
-    std::vector<std::string> routes{"/ping",   "/info",  "/meta",  "/echo",
-                                    "/whoami", "/raw",   "/upload", "/users/hits",
+    std::vector<std::string> routes{"/ping",     "/info", "/meta", "/echo", "/formecho",
+                                    "/whoami",   "/raw",  "/upload", "/users/hits",
                                     "/users/{id}/name"};
 };
 
@@ -108,6 +108,7 @@ struct [[=fut::controller{}]] admin_controller {
         co_return dto;
     }
 
+    // JSON body: the DTO is deserialized as a whole (from_body)
     [[=fut::http_post("/echo")]]
     asio::awaitable<echo_out> echo([[=fut::from_body{}]] echo_in in) {
         echo_out out;
@@ -121,6 +122,19 @@ struct [[=fut::controller{}]] admin_controller {
 
     [[=fut::http_get("/whoami")]]
     asio::awaitable<whoami_dto> whoami() { co_return whoami_dto{}; }
+
+    // The same DTO from a form instead of JSON: every member is matched by
+    // name, so message=...&count=... fills echo_in directly (from_form).
+    [[=fut::http_post("/formecho")]]
+    asio::awaitable<echo_out> form_echo([[=fut::from_form{}]] echo_in in) {
+        echo_out out;
+        out.message = in.message;
+        out.doubled = in.count * 2;
+        long long sum = 0;
+        for (int i = 1; i <= in.count; ++i) sum += i;
+        out.sum = sum;
+        co_return out;
+    }
 
     // multipart/form-data: a text field plus an uploaded file
     [[=fut::http_post("/upload")]]

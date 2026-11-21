@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <vector>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -50,12 +51,56 @@ template <class A>
 A convert_scalar(std::string_view raw, std::string_view what) {
     if constexpr (std::is_same_v<A, std::string>) {
         return std::string(raw);
-    } else {
+    }
+    else if constexpr (std::is_same_v<A, bool>) {
+        // HTML forms send checkboxes as "on"; accept the obvious spellings.
+        if (raw == "on" || raw == "1" || raw == "true") return true;
+        if (raw == "off" || raw == "0" || raw == "false") return false;
+        throw ::fut::bind_error("bad boolean for " + std::string(what) + ": '" +
+                                std::string(raw) + "'");
+    }
+    else {
         A v{};
         if (bool(glz::read_json(v, raw)))
             throw ::fut::bind_error("bad value for " + std::string(what));
         return v;
     }
+}
+
+// A parameter bound from a set of named values can either be a single value
+// (std::string / scalar) or a whole aggregate whose members are filled by
+// name. This decides which.
+template <class T>
+constexpr bool is_field_set_dto_v =
+    std::is_class_v<T> && !std::is_same_v<T, std::string> &&
+    !std::is_same_v<T, std::string_view> && !std::is_same_v<T, ::fut::uploaded_file> &&
+    requires(T& value, std::string& out) { glz::write_json(value, out); };
+
+// Fills an aggregate from name/value pairs: every member present in the set is
+// assigned; members that are absent keep the value they were default-built
+// with. Unknown names are ignored, like extra JSON keys.
+template <class Dto>
+Dto bind_field_set(const std::vector<std::pair<std::string, std::string>>& pairs) {
+    Dto dto{};
+    template for (constexpr meta::info member : std::define_static_array(
+                      meta::nonstatic_data_members_of(
+                          ^^Dto, meta::access_context::unchecked()))) {
+        constexpr std::string_view name = meta::identifier_of(member);
+        using Member = [: meta::type_of(member) :];
+        for (const auto& [key, value] : pairs) {
+            if (key != name) continue;
+            if constexpr (std::is_class_v<std::remove_cvref_t<Member>> &&
+                          !std::is_same_v<std::remove_cvref_t<Member>, std::string>) {
+                static_assert(!sizeof(Member),
+                              "fut: a form/query DTO member must be a scalar or a string; "
+                              "nested aggregates are not bound");
+            } else {
+                dto.[: member :] = convert_scalar<std::remove_cvref_t<Member>>(value, name);
+            }
+            break;
+        }
+    }
+    return dto;
 }
 
 template <meta::info F, std::size_t P, class Ann>
@@ -106,10 +151,14 @@ decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm,
         return v;
     }
     else if constexpr (!meta::annotations_of_with_type(p, ^^fut::from_query).empty()) {
-        constexpr std::string_view key = param_key<F, P, ::fut::from_query>();
-        for (const auto& [kk, vv] : ::fut::parse_query(req.query))
-            if (kk == key) return convert_scalar<Bare>(vv, key);
-        throw ::fut::bind_error("missing query parameter: " + std::string(key));
+        if constexpr (is_field_set_dto_v<Bare>) {
+            return bind_field_set<Bare>(::fut::parse_query(req.query));
+        } else {
+            constexpr std::string_view key = param_key<F, P, ::fut::from_query>();
+            for (const auto& [kk, vv] : ::fut::parse_query(req.query))
+                if (kk == key) return convert_scalar<Bare>(vv, key);
+            throw ::fut::bind_error("missing query parameter: " + std::string(key));
+        }
     }
     else if constexpr (!meta::annotations_of_with_type(p, ^^fut::from_path).empty()) {
         constexpr std::string_view key = param_key<F, P, ::fut::from_path>();
@@ -125,12 +174,15 @@ decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm,
         throw ::fut::bind_error("missing header: " + std::string(key));
     }
     else if constexpr (!meta::annotations_of_with_type(p, ^^fut::from_form).empty()) {
-        constexpr std::string_view key = param_key<F, P, ::fut::from_form>();
-        if (!form)
-            throw ::fut::bind_error("no form body on this request");
-        if (const std::string* value = form->field(key))
-            return convert_scalar<Bare>(*value, key);
-        throw ::fut::bind_error("missing form field: " + std::string(key));
+        if (!form) throw ::fut::bind_error("no form body on this request");
+        if constexpr (is_field_set_dto_v<Bare>) {
+            return bind_field_set<Bare>(form->fields);
+        } else {
+            constexpr std::string_view key = param_key<F, P, ::fut::from_form>();
+            if (const std::string* value = form->field(key))
+                return convert_scalar<Bare>(*value, key);
+            throw ::fut::bind_error("missing form field: " + std::string(key));
+        }
     }
     else if constexpr (!meta::annotations_of_with_type(p, ^^fut::from_file).empty()) {
         constexpr std::string_view key = param_key<F, P, ::fut::from_file>();

@@ -109,6 +109,18 @@ struct [[=fut::controller{}]] main_controller {
         co_return greet_out{name + "/" + std::to_string(n)};
     }
 
+    // a whole DTO from a form: members are matched by name
+    [[=fut::http_post("/formdto")]]
+    asio::awaitable<add_out> form_dto([[=fut::from_form{}]] add_in in) {
+        co_return add_out{in.a + in.b};
+    }
+
+    // a whole DTO from query parameters
+    [[=fut::http_get("/querydto")]]
+    asio::awaitable<add_out> query_dto([[=fut::from_query{}]] add_in in) {
+        co_return add_out{in.a + in.b};
+    }
+
     // an uploaded file from a multipart part
     [[=fut::http_post("/upload")]]
     asio::awaitable<upload_out> upload([[=fut::from_file{}]] fut::uploaded_file file) {
@@ -267,7 +279,7 @@ TEST_SUITE("scanned controller registration") {
 
 TEST_CASE("the scan registers every verb-annotated member, prefix composed") {
     harness h{"/api/demo"};
-    REQUIRE(h.s.routes.size() == 15);  // 10 main + 1 grouped + 1 nested + 2 monitored + 1 app-wide
+    REQUIRE(h.s.routes.size() == 17);  // 12 main + 1 grouped + 1 nested + 2 monitored + 1 app-wide
 
     CHECK(h.find(fut::method::GET, "/api/demo/ping") != nullptr);
     CHECK(h.find(fut::method::POST, "/api/demo/add") != nullptr);
@@ -319,7 +331,7 @@ TEST_CASE("the scan does not recurse into classes") {
     harness h{"/api/demo"};
     // 10 routes: the nested controller inside main_controller was skipped,
     // because only namespaces are recursed into.
-    CHECK(h.s.routes.size() == 15);
+    CHECK(h.s.routes.size() == 17);
     CHECK(h.find(fut::method::GET, "/api/demo/inner/hidden") == nullptr);
     CHECK(drive(h.s, fut::method::GET, "/api/demo/inner/hidden").status == 404);
 }
@@ -417,6 +429,38 @@ TEST_CASE("POST /form -- urlencoded fields") {
     const auto v = fut::parse<greet_out>(res.body);
     REQUIRE(v.has_value());
     CHECK(v->hi == "fut/7");
+}
+
+TEST_CASE("POST /formdto -- a whole DTO from form fields") {
+    harness h{"/api/demo"};
+    const std::pair<std::string_view, std::string_view> headers[] = {
+        {"Content-Type", "application/x-www-form-urlencoded"}};
+    const auto res = drive(h.s, fut::method::POST, "/api/demo/formdto", "a=2&b=5", {},
+                           headers);
+    CHECK(res.status == 200);
+    const auto v = fut::parse<add_out>(res.body);
+    REQUIRE(v.has_value());
+    CHECK(v->result == 7);
+}
+
+TEST_CASE("POST /formdto -- absent fields keep their defaults") {
+    harness h{"/api/demo"};
+    const std::pair<std::string_view, std::string_view> headers[] = {
+        {"Content-Type", "application/x-www-form-urlencoded"}};
+    const auto res = drive(h.s, fut::method::POST, "/api/demo/formdto", "a=4", {}, headers);
+    CHECK(res.status == 200);
+    const auto v = fut::parse<add_out>(res.body);
+    REQUIRE(v.has_value());
+    CHECK(v->result == 4);   // add_in::b defaults to 0
+}
+
+TEST_CASE("GET /querydto -- a whole DTO from query parameters") {
+    harness h{"/api/demo"};
+    const auto res = drive(h.s, fut::method::GET, "/api/demo/querydto", "", "a=6&b=7");
+    CHECK(res.status == 200);
+    const auto v = fut::parse<add_out>(res.body);
+    REQUIRE(v.has_value());
+    CHECK(v->result == 13);
 }
 
 TEST_CASE("POST /form -- multipart fields") {

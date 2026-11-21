@@ -435,10 +435,10 @@ wraps a `route_fn`. Put that in the router/invoke layer, not in an annotation's 
 | Parameter annotation | Source |
 | --- | --- |
 | `[[=fut::from_body{}]]` | request body JSON, parsed into the parameter type (glaze) |
-| `[[=fut::from_query("k")]]` / `[[=fut::from_query{}]]` | query parameter (empty key -> parameter name) |
+| `[[=fut::from_query("k")]]` / `[[=fut::from_query{}]]` | query parameter (empty key -> parameter name); on a DTO, every member is filled by name |
 | `[[=fut::from_path("a")]]` / `[[=fut::from_path{}]]` | `{placeholder}` segment of the path pattern |
 | `[[=fut::from_header("X-K")]]` | request header |
-| `[[=fut::from_form{}]]` / `[[=fut::from_form("k")]]` | form field (urlencoded or a multipart text part) |
+| `[[=fut::from_form{}]]` / `[[=fut::from_form("k")]]` | form field (urlencoded or a multipart text part); on a DTO, every member is filled by name |
 | `[[=fut::from_file{}]]` / `[[=fut::from_file("k")]]` | uploaded file (multipart part), type `fut::uploaded_file` |
 | none, type `const fut::request&` | the raw request (escape hatch) |
 | none, anything else | **compile error** (static_assert explains) |
@@ -474,6 +474,19 @@ curl -F "title=quarterly report" -F "file=@notes.txt;type=text/plain" \
 # {"title":"quarterly report","filename":"notes.txt","size":28,"content_type":"text/plain"}
 ```
 
+* **A form or query set can fill a whole DTO.** When the parameter is an aggregate, the annotation
+  matches members by name instead of looking for one field called like the parameter:
+
+  ```cpp
+  struct echo_in { std::string message{}; int count{0}; };
+
+  [[=fut::http_post("/formecho")]]
+  asio::awaitable<echo_out> form_echo([[=fut::from_form{}]] echo_in in);  // message=...&count=...
+  ```
+
+  Missing members keep the value they were default-built with (`count` stays 0), unknown names are
+  ignored like extra JSON keys, and members must be scalars or `std::string`. The same applies to
+  `from_query` on a GET: `?a=6&b=7` fills `struct add_in { int a; int b; }`.
 * `fut::uploaded_file` carries `name`, `filename`, `content_type` and `data`. Files are held in
   memory; the server rejects bodies above 32 MB with **413** before they reach an action.
 * A field binds to `std::string` or to any scalar (`int`, `double`, ...) through the same
@@ -695,7 +708,7 @@ fut/
 │   ├── http_message.*      owned request message + response serialization
 │   └── builder/server/router/app_loader/config/log/main
 ├── apps/admin | apps/web   sample apps (controller style)
-└── tests/                  doctest suite (52 cases)
+└── tests/                  doctest suite (55 cases)
 ```
 
 ## Configuration (config.json)
@@ -713,7 +726,7 @@ fut/
 ## Tests
 
 ```bash
-ctest --preset release   # 52 cases
+ctest --preset release   # 55 cases
 ```
 
 * `test_router` — registration, app bookkeeping, full-path matching, literal-over-placeholder

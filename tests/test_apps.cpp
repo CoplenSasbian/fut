@@ -87,7 +87,7 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
     REQUIRE(web != nullptr);
     CHECK(admin->prefix == "/api/admin");
     CHECK(web->prefix == "/api/web");
-    CHECK(admin->routes == 9);  // 7 flat + 2 inside users_controller
+    CHECK(admin->routes == 10);  // 8 flat + 2 inside users_controller
     CHECK(web->routes == 7);    // 6 flat + 1 inside web::beta
 
     SUBCASE("admin /ping") {
@@ -104,6 +104,20 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
         struct echo_out { std::string message{}; int doubled{}; long long sum{}; };
         const auto res =
             run(rt, fut::method::POST, "/api/admin/echo", R"({"message":"hi","count":4})");
+        CHECK(res.status == 200);
+        const auto v = fut::parse<echo_out>(res.body);
+        REQUIRE(v.has_value());
+        CHECK(v->message == "hi");
+        CHECK(v->doubled == 8);
+        CHECK(v->sum == 10);
+    }
+
+    SUBCASE("admin /formecho -- the same DTO from urlencoded fields") {
+        struct echo_out { std::string message{}; int doubled{}; long long sum{}; };
+        const std::pair<std::string_view, std::string_view> headers[] = {
+            {"Content-Type", "application/x-www-form-urlencoded"}};
+        const auto res = run(rt, fut::method::POST, "/api/admin/formecho",
+                             "message=hi&count=4", {}, headers);
         CHECK(res.status == 200);
         const auto v = fut::parse<echo_out>(res.body);
         REQUIRE(v.has_value());
