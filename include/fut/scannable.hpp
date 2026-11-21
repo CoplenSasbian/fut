@@ -28,7 +28,6 @@
 // it reads the verb annotations off the class's member functions and
 // registers routes with the router module.
 
-#include <cstddef>
 #include <meta>
 
 #include <fut/ctx.hpp>
@@ -36,7 +35,5 @@
 namespace fut {
 
 struct scannable {};
-
-inline constexpr std::size_t max_entity_annotations = 8;
 
 } // namespace fut

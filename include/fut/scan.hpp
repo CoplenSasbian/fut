@@ -24,15 +24,16 @@
 // context, never from the scanner.
 //
 // Everything here is a `template for` expansion over reflection ranges: no
-// fixed-size caps, no index packs, no per-index helper templates. Adding an
-// entity or an annotation costs exactly one instantiation.
+// fixed-size caps, no index packs, no per-index helper templates. Reflection
+// ranges are `std::vector`s built in constant evaluation and turned into
+// static arrays by `std::define_static_array` -- nothing escapes compile
+// time, so no size has to be guessed anywhere.
 //
 // Nothing here knows about HTTP: a new scannable annotation needs no change
 // to this file.
 
-#include <array>
-#include <cstddef>
 #include <meta>
+#include <vector>
 
 #include <fut/scannable.hpp>
 
@@ -42,18 +43,21 @@ namespace meta = std::meta;
 
 // The scannable annotations on one entity.
 //
+// A plain std::vector is fine: the whole thing never leaves constant
+// evaluation -- std::define_static_array turns the result into a static
+// range before any code is generated, so there is no fixed cap to truncate
+// and no array to size by hand.
+//
 // Some namespace members cannot be queried (an unresolved overload set is
 // one): annotations_of throws for those. They carry no annotation, so
 // skipping them is correct -- the catch is the guard, not an error path.
 template <meta::info Entity>
-consteval auto scannable_annotations() {
-    std::array<meta::info, max_entity_annotations> out{};
-    std::size_t i = 0;
+consteval std::vector<meta::info> scannable_annotations() {
+    std::vector<meta::info> out;
     try {
         for (auto a : meta::annotations_of(Entity))
-            if (i < max_entity_annotations &&
-                meta::is_base_of_type(^^fut::scannable, meta::type_of(a)))
-                out[i++] = a;
+            if (meta::is_base_of_type(^^fut::scannable, meta::type_of(a)))
+                out.push_back(a);
     } catch (...) {
     }
     return out;
@@ -62,12 +66,10 @@ consteval auto scannable_annotations() {
 // Every scannable annotation on one entity, never descending into it.
 template <meta::info Entity>
 void visit_entity(fut_ctx* ctx) {
-    constexpr auto anns = scannable_annotations<Entity>();
-    template for (constexpr meta::info a : std::define_static_array(anns)) {
-        if constexpr (a != meta::info{}) {
-            constexpr auto self = [: meta::constant_of(a) :];
-            self.template operation<Entity>(ctx);
-        }
+    template for (constexpr meta::info a :
+                  std::define_static_array(scannable_annotations<Entity>())) {
+        constexpr auto self = [: meta::constant_of(a) :];
+        self.template operation<Entity>(ctx);
     }
 }
 
