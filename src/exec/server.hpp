@@ -1,13 +1,12 @@
 #pragma once
 
-// TCP listener: spawns one session coroutine per connection and dispatches
-// requests against the router's registered routes.
+// TCP listener: spawns one session coroutine per connection, parses HTTP/1.1
+// with llhttp and dispatches requests against the router's registered routes.
 
 #include <chrono>
 #include <string>
 
 #include <boost/asio.hpp>
-#include <boost/beast.hpp>
 
 #include "router.hpp"
 

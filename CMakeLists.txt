@@ -15,7 +15,8 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # ---- dependencies (vcpkg manifest mode, see vcpkg.json / CMakePresets.json) ----
-find_package(Boost CONFIG REQUIRED COMPONENTS asio beast)
+find_package(Boost CONFIG REQUIRED COMPONENTS asio)
+find_package(llhttp CONFIG REQUIRED)
 find_package(glaze CONFIG REQUIRED)
 find_package(doctest CONFIG REQUIRED)
 

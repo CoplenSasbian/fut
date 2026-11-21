@@ -7,6 +7,8 @@ add_executable(fut_server
     router.cpp
     app_loader.cpp
     config.cpp
+    http_message.cpp
+    http_parser.cpp
     log.cpp
 )
 
@@ -16,8 +18,8 @@ target_include_directories(fut_server PRIVATE
 )
 
 target_link_libraries(fut_server PRIVATE
-    Boost::beast
     Boost::asio
+    llhttp::llhttp_static
     glaze::glaze
 )
 

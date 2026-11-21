@@ -3,8 +3,8 @@
   "name": "fut",
   "version": "0.1.0",
   "dependencies": [
-    "boost-beast",
     "boost-asio",
+    "llhttp",
     "glaze",
     "doctest"
   ],

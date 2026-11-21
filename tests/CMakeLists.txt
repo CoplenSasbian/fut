@@ -27,6 +27,18 @@ target_include_directories(test_reflect PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(test_reflect PRIVATE doctest::doctest)
 doctest_discover_tests(test_reflect)
 
+# HTTP message layer: llhttp parsing + response serialization
+add_executable(test_http_parser test_http_parser.cpp
+    ${PROJECT_SOURCE_DIR}/src/exec/http_parser.cpp
+    ${PROJECT_SOURCE_DIR}/src/exec/http_message.cpp
+)
+target_include_directories(test_http_parser PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src/exec
+)
+target_link_libraries(test_http_parser PRIVATE doctest::doctest llhttp::llhttp_static)
+doctest_discover_tests(test_http_parser)
+
 # Config file: the log chain list is a user-facing interface
 add_executable(test_config test_config.cpp ${PROJECT_SOURCE_DIR}/src/exec/config.cpp)
 target_include_directories(test_config PRIVATE

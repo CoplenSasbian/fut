@@ -16,7 +16,8 @@ reflection-free fallback path.
 
 ## Features
 
-* Asio coroutines (`asio::awaitable`) + Boost.Beast HTTP server
+* Asio coroutines (`asio::awaitable`) for I/O; HTTP/1.1 messages parsed by **llhttp** and
+  serialized by ~40 lines of our own code (no Boost.Beast)
 * Annotation-declared routes: `[[=fut::http_get("/ping")]]` on controller methods
 * Automatic parameter binding: request body DTOs, query/path/header values, raw request escape hatch
 * Return-type adaptation: `fut::response` passthrough, **plain strings served as text/plain**,
@@ -27,12 +28,38 @@ reflection-free fallback path.
 * Asynchronous logging: colour console + rotating file chains, reflection-based level names
 * doctest suite with full end-to-end coverage (loads the real DLLs)
 
+## The HTTP message layer
+
+Only two things are needed from an HTTP library: parse a request into method / target / headers /
+body, and write a response. Beast does both, but it brings a large template surface (and the
+compile time that goes with it) for those two jobs — and nothing else in the server needs it:
+Asio owns the sockets, and Boost's database/Redis libraries integrate with Asio's executor, not
+with Beast. So the message layer is:
+
+| Concern | Choice |
+| --- | --- |
+| Parsing | **llhttp** — the parser Node.js uses: small C library, incremental, fuzz-tested, handles Content-Length, chunked bodies, keep-alive semantics |
+| Serialization | `src/exec/http_message.cpp` — status line, framing headers, body (~40 lines) |
+| I/O, coroutines, timers | Boost.Asio (unchanged) |
+
+```
+socket ──read──▶ std::string buffer ──▶ request_parser (llhttp) ──▶ fut::exec::http_request_message
+                                              │                         │
+                                     pipelined tail stays       dispatch -> fut::response
+                                              ▼
+                       serialize_response(...) ──write──▶ socket
+```
+
+The parser is incremental and reports how many bytes a message used, so pipelined requests work
+without copying, and a partial read simply returns `need_more`. Timeouts use an `asio::steady_timer`
+that closes the socket, and oversized bodies are rejected with 413.
+
 ## Requirements (hard)
 
 | Component | Requirement |
 | --- | --- |
 | Compiler | **GCC >= 15 with `-freflection`** (std::meta reflection; no fallback path) |
-| Dependencies | vcpkg: `boost-beast`, `boost-asio`, `glaze`, `doctest` |
+| Dependencies | vcpkg: `boost-asio`, `llhttp`, `glaze`, `doctest` |
 | Build | CMake >= 3.25 + Ninja |
 | Triplet | `x64-mingw-dynamic` |
 
@@ -609,9 +636,12 @@ fut/
 │   ├── reflect.hpp         std::meta member utilities
 │   ├── json.hpp / url.hpp  glaze helpers / query parsing
 │   └── detail/             log format/path helpers
-├── src/exec/               server executable: builder, server, router, app_loader, config, log, main
+├── src/exec/               server executable
+│   ├── http_parser.*       llhttp wrapper (incremental, one message, reports consumed bytes)
+│   ├── http_message.*      owned request message + response serialization
+│   └── builder/server/router/app_loader/config/log/main
 ├── apps/admin | apps/web   sample apps (controller style)
-└── tests/                  doctest suite (30 cases)
+└── tests/                  doctest suite (41 cases)
 ```
 
 ## Configuration (config.json)
@@ -629,7 +659,7 @@ fut/
 ## Tests
 
 ```bash
-ctest --preset release   # 30 cases
+ctest --preset release   # 41 cases
 ```
 
 * `test_router` — registration, app bookkeeping, full-path matching, literal-over-placeholder
@@ -642,4 +672,6 @@ ctest --preset release   # 30 cases
   the routes are driven exactly like the server does.
 * `test_config` — the config file as an interface: chain parsing, defaults, an explicit empty
   list, and validation errors for unknown formatters, sinks, levels and file settings.
+* `test_http_parser` — the message layer: plain/chunked/bodies, split deliveries, pipelined
+  requests, keep-alive rules (HTTP/1.0 vs 1.1, `Connection`), rejects garbage, header lookup.
 * `test_log`, `test_reflect` — logging chains and std::meta utilities.
