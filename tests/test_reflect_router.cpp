@@ -195,9 +195,14 @@ struct harness {
         ctx.host = &s;
         ctx.app_name = "demo";
         ctx.app_prefix = prefix_storage;
-        ctx.get_module_fn = [](fut::fut_ctx* c, std::string_view name) -> void* {
-            if (name == "router") return &static_cast<sink*>(c->host)->module;
-            return nullptr;
+        ctx.get_module_fn = [](fut::fut_ctx* c, std::string_view name,
+                               std::string_view type) -> fut::module_lookup {
+            const bool type_ok = type.empty() ||
+                                 type == typeid(fut::http::router_module).name();
+            if (!type_ok) return {nullptr, fut::module_status::wrong_type};
+            const bool name_ok = name.empty() || name == "router";
+            if (!name_ok) return {nullptr, fut::module_status::not_found};
+            return {&static_cast<sink*>(c->host)->module, fut::module_status::found};
         };
         fut::scan::run<^^demo_actions>(&ctx);
     }

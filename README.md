@@ -141,8 +141,12 @@ server                                        app DLL
 
 * The server owns the router; a DLL never links against the executable.
 * `fut_ctx` is the whole contract between them: a module lookup plus a server-private `host`.
-* `get_module()` returns `void*`; the caller casts it to the type agreed for that module name.
-  Casting to any other type is undefined behaviour.
+* Modules are stored under **two keys**: their interface type (`typeid`) and a unique name. Lookup is
+  by type by default — `ctx->get_module<fut::http::router_module>()` — and the name only matters when
+  several modules share a type (`ctx->get_module<store>("archive")`). Asking for a type that more
+  than one module answers, without a name, throws `fut::module_error`: an ambiguous lookup is a
+  configuration bug, and picking one arbitrarily would hide it. `get_module("name")` still returns
+  an untyped `void*` for hand-written modules.
 * `ctx.app_name` / `ctx.app_prefix` are the app's identity, filled by the server from the DLL's
   exports before registration -- which is how annotations compose absolute paths without the
   scanner ever carrying a prefix argument.
@@ -642,6 +646,7 @@ int main() {
         .log_level("debug")
         .add_route(fut::method::GET, "/health", &health)   // in-process route, no DLL
         .add_middleware(&log_request)                      // platform-wide, sees every request
+        .add_module("cache", &cache)                       // extra service for app DLLs
         .run();                       // blocks until SIGINT/SIGTERM
 }
 ```
@@ -757,8 +762,11 @@ Neither the server executable nor the other app DLLs are rebuilt.
 * All modules must be built with the **same compiler and runtime** (the CMake presets guarantee it).
 * A DLL exports `fut_app_register(fut_ctx*)` (required), `fut_abi_version()`,
   `fut_app_name()` and `fut_app_prefix()`. The server refuses DLLs whose ABI differs from its own.
-* `fut_ctx` layout, `router_module` layout and `route_fn` are the binary contract: bump
-  `fut::abi_version` (`fut/export.hpp`) when any of them changes incompatibly.
+* `fut_ctx` layout, `router_module` layout, `route_fn` and the module lookup signature are the
+  binary contract: bump `fut::abi_version` (`fut/export.hpp`) when any of them changes incompatibly.
+* Modules are keyed by the **mangled type name** (`typeid(T).name()`), compared as a string: the two
+  sides are separate modules, so comparing `std::type_info` objects is not guaranteed. The router
+  registers itself under `typeid(fut::http::router_module)`; apps reach it with the typed accessor.
 * `request` string_views point into server-owned buffers and stay valid for the handler call only.
 * `response` ownership moves to the server; exceptions escaping an action become 500 responses.
 * A DLL must stay loaded while its routes are reachable — the route functions live in it.
@@ -820,11 +828,12 @@ fut/
 │   ├── json.hpp / url.hpp  glaze helpers / query parsing
 │   └── detail/             log format/path helpers
 ├── src/exec/               server executable
+│   ├── module_registry.hpp modules by type + unique name (the fut_ctx backend)
 │   ├── http_parser.*       llhttp wrapper (incremental, one message, reports consumed bytes)
 │   ├── http_message.*      owned request message + response serialization
 │   └── builder/server/router/app_loader/config/log/main
 ├── apps/admin | apps/web   sample apps (controller style)
-└── tests/                  doctest suite (61 cases)
+└── tests/                  doctest suite (62 cases)
 ```
 
 ## Configuration (config.json)
@@ -842,7 +851,7 @@ fut/
 ## Tests
 
 ```bash
-ctest --preset release   # 61 cases
+ctest --preset release   # 62 cases
 ```
 
 * `test_router` — registration, app bookkeeping, full-path matching, literal-over-placeholder
@@ -860,6 +869,8 @@ ctest --preset release   # 61 cases
 * `test_form` — urlencoded and multipart parsing: decoding, quoted boundaries, empty file parts,
   malformed bodies reported with a reason, Content-Type dispatch.
 * `test_router` also covers the middleware pipeline (platform chain wrapping matched routes and
-  404s, short-circuiting, rewriting, app chains staying inside their app) and the error mapping
-  (own status, 404/405/400/500, custom `on_error` envelope, a middleware that throws).
+  404s, short-circuiting, rewriting, app chains staying inside their app), the error mapping
+  (own status, 404/405/400/500, custom `on_error` envelope, a middleware that throws) and module
+  lookup (by type, ambiguous type `fut::module_error`, name-resolved ambiguity, wrong type,
+  duplicate names refused).
 * `test_log`, `test_reflect` — logging chains and std::meta utilities.

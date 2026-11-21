@@ -13,6 +13,7 @@
 #include <fut/http/router.hpp>
 #include <fut/json.hpp>
 
+#include "module_registry.hpp"
 #include "router.hpp"
 
 namespace asio = boost::asio;
@@ -66,6 +67,53 @@ bool has_header(const fut::response& res, std::string_view name, std::string_vie
 }
 
 } // namespace
+
+TEST_CASE("module lookup is keyed by type, names disambiguate") {
+    struct store {
+        int id{};
+    };
+
+    store primary{1};
+    store archive{2};
+    fut::http::router_module router_module{};
+
+    fut::exec::module_registry modules;
+    modules.add("router", typeid(fut::http::router_module).name(), &router_module);
+    modules.add("primary", typeid(store).name(), &primary);
+    modules.add("archive", typeid(store).name(), &archive);
+
+    fut::fut_ctx ctx{};
+    ctx.host = &modules;
+    ctx.get_module_fn = [](fut::fut_ctx* c, std::string_view name,
+                           std::string_view type) -> fut::module_lookup {
+        return static_cast<fut::exec::module_registry*>(c->host)->find(name, type);
+    };
+
+    // the type alone is enough when it is unique
+    CHECK(ctx.get_module<fut::http::router_module>() == &router_module);
+    CHECK(ctx.get_module<fut::http::router_module>("router") == &router_module);
+
+    // two modules of one type: a type-only lookup is an error, not a guess
+    CHECK_THROWS_AS(ctx.get_module<store>(), fut::module_error);
+
+    // ... and a name resolves it
+    CHECK(ctx.get_module<store>("primary") == &primary);
+    CHECK(ctx.get_module<store>("archive") == &archive);
+
+    // a name that exists with another type is an error too
+    CHECK_THROWS_AS(ctx.get_module<store>("router"), fut::module_error);
+
+    // nothing registered: nullptr, not an error
+    CHECK(ctx.get_module<store>("nope") == nullptr);
+    CHECK(ctx.get_module<store>("routerx") == nullptr);
+
+    // untyped access by name still works for hand-written modules
+    CHECK(ctx.get_module("primary") == &primary);
+
+    // duplicate names cannot shadow each other
+    CHECK_THROWS_AS(modules.add("primary", typeid(store).name(), &archive),
+                    std::runtime_error);
+}
 
 TEST_CASE("routes are matched by their full pattern") {
     fut::exec::router rt;

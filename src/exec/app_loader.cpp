@@ -49,10 +49,14 @@ using abi_fn = std::uint32_t (*)();
 using text_fn = const char* (*)();
 using register_fn = void (*)(fut::fut_ctx*);
 
-// The only module the server publishes today.
-void* module_lookup(fut::fut_ctx* ctx, std::string_view name) {
-    if (name == "router") return const_cast<fut::http::router_module*>(static_cast<router*>(ctx->host)->module());
-    return nullptr;
+// The executable's module lookup: name and/or type decide, the registry
+// answers. This runs on the executable's side of the ABI, so an ambiguous or
+// mismatched request is reported as a status and the DLL raises the error.
+fut::module_lookup module_lookup(fut::fut_ctx* ctx, std::string_view name,
+                                 std::string_view type) {
+    auto* services = static_cast<app_loader::services*>(ctx->host);
+    if (!services) return {nullptr, fut::module_status::not_found};
+    return services->modules.find(name, type);
 }
 
 constexpr auto loader_log = fut::log::grp("loader");
@@ -60,7 +64,8 @@ constexpr auto loader_log = fut::log::grp("loader");
 } // namespace
 
 std::vector<app_loader::entry> app_loader::load_dir(const std::filesystem::path& dir,
-                                                    router& rt) {
+                                                    router& rt,
+                                                    module_registry modules) {
     std::vector<entry> out;
     std::error_code ec;
     if (!std::filesystem::is_directory(dir, ec))
@@ -105,9 +110,18 @@ std::vector<app_loader::entry> app_loader::load_dir(const std::filesystem::path&
             return f ? std::string((*f)()) : std::string{};
         }();
 
+        // The router is always published under its type; "router" is its name.
+        if (modules.find("router", typeid(fut::http::router_module).name()).status ==
+            fut::module_status::not_found) {
+            modules.add("router", typeid(fut::http::router_module).name(),
+                        const_cast<fut::http::router_module*>(rt.module()));
+        }
+
+        services host_services{&rt, std::move(modules), name, prefix};
+
         rt.begin_app(name, prefix);
         fut::fut_ctx ctx{};
-        ctx.host = &rt;
+        ctx.host = &host_services;
         ctx.get_module_fn = &module_lookup;
         ctx.app_name = name;
         ctx.app_prefix = prefix;

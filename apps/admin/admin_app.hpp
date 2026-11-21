@@ -97,7 +97,8 @@ asio::awaitable<fut::response> stamp_app(const fut::request& req,
 struct app_filter : fut::scannable {
     template <std::meta::info Entity>
     void operation(fut::fut_ctx* ctx) const {
-        const fut::http::router_module* rm = fut::http::router_of(ctx);
+        // Typed lookup: the type is the key, "router" is just its name.
+        const fut::http::router_module* rm = ctx->get_module<fut::http::router_module>("router");
         if (rm && rm->add_middleware) rm->add_middleware(rm->self, &stamp_app);
     }
 };

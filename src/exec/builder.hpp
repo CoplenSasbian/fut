@@ -27,6 +27,9 @@
 #include <fut/http/error.hpp>
 #include <fut/http/router.hpp>
 #include <fut/log.hpp>
+#include <typeinfo>
+
+#include "module_registry.hpp"
 
 namespace fut::exec {
 
@@ -90,6 +93,21 @@ public:
         return *this;
     }
 
+    // Publish one more service to app DLLs, reachable through
+    // ctx->get_module<T>() / ctx->get_module<T>("name"). The instance must
+    // outlive the server. Register modules that share a type under distinct
+    // names -- a type-only lookup of an ambiguous type is an error.
+    server_builder& add_module(std::string_view name, std::string_view type_name,
+                               void* module) {
+        modules_.add(name, type_name, module);
+        return *this;
+    }
+
+    template <class T>
+    server_builder& add_module(std::string_view name, T* module) {
+        return add_module(name, typeid(T).name(), module);
+    }
+
     // Platform error formatting: replaces the body written for every error
     // status (default {"error":"<message>"}). Returning a response from here
     // is how an operator standardises error envelopes across all apps.
@@ -126,6 +144,7 @@ private:
     std::optional<std::string> log_level_;
     std::vector<extra_route> extra_routes_;
     std::vector<fut::http::middleware_fn> middlewares_;
+    module_registry modules_{};
     std::function<fut::response(unsigned, std::string_view)> error_handler_{};
     std::vector<fut::log::chain_options> chains_{default_log_chains()};
 

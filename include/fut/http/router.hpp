@@ -77,9 +77,11 @@ struct router_module {
     void (*add_middleware)(void* self, middleware_hook fn) = nullptr;
 };
 
-// Convenience: the router module of a context, or nullptr.
+// Convenience: the router module of a context, or nullptr. The type is the
+// key; "router" is only its name (and today the only module, so either form
+// works).
 [[nodiscard]] inline const router_module* router_of(const fut_ctx* ctx) {
-    return module_as<const router_module>(ctx, "router");
+    return ctx ? ctx->get_module<const router_module>("router") : nullptr;
 }
 
 } // namespace fut::http

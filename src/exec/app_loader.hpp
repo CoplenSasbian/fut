@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "module_registry.hpp"
 #include "router.hpp"
 
 namespace fut::exec {
@@ -29,10 +30,21 @@ public:
         void* handle = nullptr;
     };
 
+    // What an app module can reach through fut_ctx: the router, plus any
+    // other service the executable publishes. Add modules with
+    // `services.modules.add(name, typeid(T).name(), &instance)` before loading.
+    struct services {
+        router* rt = nullptr;
+        module_registry modules{};
+        std::string app_name{};
+        std::string app_prefix{};
+    };
+
     // Throws std::runtime_error if the directory does not exist. Routes are
     // registered into `rt` while loading; the DLLs stay loaded until
     // unload_all() (their route functions live in them).
-    std::vector<entry> load_dir(const std::filesystem::path& dir, router& rt);
+    std::vector<entry> load_dir(const std::filesystem::path& dir, router& rt,
+                                module_registry modules = {});
 
     void unload_all();
 

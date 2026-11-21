@@ -177,8 +177,9 @@ int server_builder::run() {
         router rt;
 
         // App DLLs register themselves into the router through the context.
+        // Anything the embedder published with add_module() travels with it.
         app_loader loader;
-        loader.load_dir(apps_dir, rt);
+        loader.load_dir(apps_dir, rt, modules_);
 
         // Platform middleware wraps everything, so register it first.
         for (const fut::http::middleware_fn& mw : middlewares_) rt.add_global_middleware(mw);
