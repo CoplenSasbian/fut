@@ -236,7 +236,7 @@ TEST_CASE("the scan registers every verb-annotated member, prefix composed") {
     CHECK(h.find(fut::method::GET, "/api/demo/grp/first") != nullptr);   // controller path
     CHECK(h.find(fut::method::GET, "/api/demo/deep/one") != nullptr);    // nested namespace
 
-    // the derived annotation: inherited member route + its own extra route
+    // stacked peer: the controller's route plus the health peer's own route
     CHECK(h.find(fut::method::GET, "/api/demo/mon/ping") != nullptr);
     CHECK(h.find(fut::method::GET, "/api/demo/mon/health") != nullptr);
 
