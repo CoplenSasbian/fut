@@ -82,22 +82,62 @@ void log_exception(std::exception_ptr ep) {
     }
 }
 
+// The stock formatters, shared by the presets.
+constexpr std::string_view console_pattern = "{T} [{L:<8}] {g:<12} {m}";
+constexpr std::string_view file_pattern = "{T} [{L:<8}] {g:<12} {s}: {m}";
+
 } // namespace
 
+std::vector<fut::log::chain_options> server_builder::default_log_chains() {
+    return {
+        fut::log::chain_options{
+            .minimum_level = fut::log::level::info,
+            .formatter = fut::log::pattern_formatter{std::string(console_pattern)},
+            .sink = fut::log::console_sink{.color = true},
+        },
+        fut::log::chain_options{
+            .minimum_level = fut::log::level::trace,
+            .formatter = fut::log::pattern_formatter{std::string(file_pattern)},
+            .sink = fut::log::file_sink{.path = "logs/fut.log",
+                                        .max_bytes = 2 * 1024 * 1024, .max_files = 3},
+        },
+    };
+}
+
+server_builder& server_builder::log_to_console(bool color, fut::log::level minimum) {
+    chains_.clear();
+    return add_log_chain(fut::log::chain_options{
+        .minimum_level = minimum,
+        .formatter = fut::log::pattern_formatter{std::string(console_pattern)},
+        .sink = fut::log::console_sink{.color = color},
+    });
+}
+
+server_builder& server_builder::log_to_file(std::filesystem::path path,
+                                            std::uint64_t max_bytes,
+                                            std::uint32_t max_files,
+                                            fut::log::level minimum) {
+    chains_.clear();
+    return add_log_chain(fut::log::chain_options{
+        .minimum_level = minimum,
+        .formatter = fut::log::pattern_formatter{std::string(file_pattern)},
+        .sink = fut::log::file_sink{.path = std::move(path),
+                                    .max_bytes = max_bytes,
+                                    .max_files = max_files},
+    });
+}
+
 int server_builder::run() {
-    // Logging chains: colourised console plus a rotating file. The global level
-    // comes from the configuration and is applied after it is read.
-    fut::log::add_chain(fut::log::chain_options{
-        .minimum_level = fut::log::level::info,
-        .formatter = fut::log::pattern_formatter{"{T} [{L:<8}] {g:<12} {m}"},
-        .sink = fut::log::console_sink{.color = true},
-    });
-    fut::log::add_chain(fut::log::chain_options{
-        .minimum_level = fut::log::level::trace,
-        .formatter = fut::log::pattern_formatter{"{T} [{L:<8}] {g:<12} {s}: {m}"},
-        .sink = fut::log::file_sink{.path = "logs/fut.log",
-                                    .max_bytes = 2 * 1024 * 1024, .max_files = 3},
-    });
+    // Start the configured chains. A chain that cannot start (unwritable
+    // directory, bad pattern) is reported and skipped: logging must never
+    // take the server down.
+    for (const fut::log::chain_options& chain : chains_) {
+        try {
+            fut::log::add_chain(chain);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "fut: cannot start a log chain: %s\n", e.what());
+        }
+    }
 
     int exit_code = 1;
     try {

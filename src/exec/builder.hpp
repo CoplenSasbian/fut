@@ -16,10 +16,12 @@
 //   }
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <fut/http/router.hpp>
@@ -39,6 +41,32 @@ public:
     /// "trace" / "debug" / "info" / "warning" / "error" / "critical" / "off"
     /// (matched against the enum through reflection); overrides config.json.
     server_builder& log_level(std::string_view v) { log_level_ = std::string(v); return *this; }
+
+    // ---- logging chains ------------------------------------------------
+    // Chains are created when run() starts; the embedder owns the policy.
+    // The default set is a colour console at info plus a rotating file at
+    // trace. Rebuild it with clear_log_chains() + add_log_chain(), or use
+    // one of the presets below (each preset clears what was there).
+
+    server_builder& clear_log_chains() { chains_.clear(); return *this; }
+
+    server_builder& add_log_chain(fut::log::chain_options chain) {
+        chains_.push_back(std::move(chain));
+        return *this;
+    }
+
+    /// Clear the chains and log to stdout only.
+    server_builder& log_to_console(bool color = true,
+                                   fut::log::level minimum = fut::log::level::info);
+
+    /// Clear the chains and log to a rotating file only.
+    server_builder& log_to_file(std::filesystem::path path,
+                                std::uint64_t max_bytes = std::uint64_t{2} << 20,
+                                std::uint32_t max_files = 3,
+                                fut::log::level minimum = fut::log::level::trace);
+
+    /// The stock set: colour console at info + rotating file at trace.
+    [[nodiscard]] static std::vector<fut::log::chain_options> default_log_chains();
 
     // Extra in-process routes, registered without any DLL. They belong to
     // the built-in "core" app alongside /api/core/status.
@@ -66,6 +94,7 @@ private:
     std::optional<std::chrono::seconds> timeout_;
     std::optional<std::string> log_level_;
     std::vector<extra_route> extra_routes_;
+    std::vector<fut::log::chain_options> chains_{default_log_chains()};
 };
 
 } // namespace fut::exec

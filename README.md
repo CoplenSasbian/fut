@@ -368,6 +368,26 @@ int main() {
 }
 ```
 
+Logging is part of the builder too — the default set (colour console at info plus a rotating
+file at trace) can be replaced or extended:
+
+```cpp
+server_builder()
+    .clear_log_chains()                       // drop the defaults
+    .add_log_chain(fut::log::chain_options{   // any chain you want
+        .minimum_level = fut::log::level::debug,
+        .formatter = fut::log::json_formatter{},
+        .sink = fut::log::file_sink{.path = "logs/json.log"},
+    })
+    .run();
+
+server_builder().log_to_console(true);                    // stdout only
+server_builder().log_to_file("logs/fut.log", 2 << 20, 3); // file only, rotating
+```
+
+Chains start when `run()` begins; one that cannot start is reported on stderr and skipped, so a
+broken log path never takes the server down.
+
 The builder also registers a built-in `GET /api/core/status` route (service version, ABI, loaded
 apps and their route counts) and sets up the logging chains described below.
 
@@ -377,19 +397,16 @@ Asynchronous, chain-based logging (`fut/log.hpp`, ported from HeliosView2): a ca
 calling thread and queues a single shared record to every chain; each chain owns a worker thread,
 so a slow sink never blocks the caller.
 
+Chains are installed by `fut::exec::server_builder` from its configuration (see *The server
+builder*); `fut::log::add_chain` is the primitive it calls, available directly to embedders that
+manage logging themselves:
+
 ```cpp
-// server_builder sets these two chains up; embedders can add their own:
 fut::log::add_chain(fut::log::chain_options{
     .minimum_level = fut::log::level::info,
     .formatter = fut::log::pattern_formatter{"{T} [{L:<8}] {g:<12} {m}"},
     .sink = fut::log::console_sink{.color = true},
 });
-fut::log::add_chain(fut::log::chain_options{
-    .minimum_level = fut::log::level::trace,
-    .formatter = fut::log::pattern_formatter{"{T} [{L:<8}] {g:<12} {s}: {m}"},
-    .sink = fut::log::file_sink{.path = "logs/fut.log", .max_bytes = 2 << 20, .max_files = 3},
-});
-
 constexpr auto loader_log = fut::log::grp("loader");
 loader_log.info("app '{}' ({} route(s)) <- {}", name, count, path);
 ```
