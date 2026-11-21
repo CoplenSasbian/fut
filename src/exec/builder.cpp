@@ -82,33 +82,47 @@ void log_exception(std::exception_ptr ep) {
     }
 }
 
-// The stock formatters, shared by the presets.
-constexpr std::string_view console_pattern = "{T} [{L:<8}] {g:<12} {m}";
-constexpr std::string_view file_pattern = "{T} [{L:<8}] {g:<12} {s}: {m}";
+// Starts the chains; a chain that cannot start (unwritable directory, bad
+// pattern) is reported and skipped -- logging must never take the server down.
+void install_chains(const std::vector<fut::log::chain_options>& chains) {
+    for (const fut::log::chain_options& chain : chains) {
+        try {
+            fut::log::add_chain(chain);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "fut: cannot start a log chain: %s\n", e.what());
+        }
+    }
+}
 
 } // namespace
 
-std::vector<fut::log::chain_options> server_builder::default_log_chains() {
+std::vector<fut::log::chain_options> server_builder::default_log_chains(
+    std::string_view console_pattern, std::string_view file_pattern,
+    std::filesystem::path file_path, std::uint64_t max_bytes, std::uint32_t max_files,
+    fut::log::level console_min, fut::log::level file_min) {
     return {
         fut::log::chain_options{
-            .minimum_level = fut::log::level::info,
+            .minimum_level = console_min,
             .formatter = fut::log::pattern_formatter{std::string(console_pattern)},
             .sink = fut::log::console_sink{.color = true},
         },
         fut::log::chain_options{
-            .minimum_level = fut::log::level::trace,
+            .minimum_level = file_min,
             .formatter = fut::log::pattern_formatter{std::string(file_pattern)},
-            .sink = fut::log::file_sink{.path = "logs/fut.log",
-                                        .max_bytes = 2 * 1024 * 1024, .max_files = 3},
+            .sink = fut::log::file_sink{.path = std::move(file_path),
+                                        .max_bytes = max_bytes,
+                                        .max_files = max_files},
         },
     };
 }
 
-server_builder& server_builder::log_to_console(bool color, fut::log::level minimum) {
+server_builder& server_builder::log_to_console(bool color, fut::log::level minimum,
+                                               std::string_view pattern) {
     chains_.clear();
+    chains_explicit_ = true;
     return add_log_chain(fut::log::chain_options{
         .minimum_level = minimum,
-        .formatter = fut::log::pattern_formatter{std::string(console_pattern)},
+        .formatter = fut::log::pattern_formatter{std::string(pattern)},
         .sink = fut::log::console_sink{.color = color},
     });
 }
@@ -116,11 +130,13 @@ server_builder& server_builder::log_to_console(bool color, fut::log::level minim
 server_builder& server_builder::log_to_file(std::filesystem::path path,
                                             std::uint64_t max_bytes,
                                             std::uint32_t max_files,
-                                            fut::log::level minimum) {
+                                            fut::log::level minimum,
+                                            std::string_view pattern) {
     chains_.clear();
+    chains_explicit_ = true;
     return add_log_chain(fut::log::chain_options{
         .minimum_level = minimum,
-        .formatter = fut::log::pattern_formatter{std::string(file_pattern)},
+        .formatter = fut::log::pattern_formatter{std::string(pattern)},
         .sink = fut::log::file_sink{.path = std::move(path),
                                     .max_bytes = max_bytes,
                                     .max_files = max_files},
@@ -128,18 +144,8 @@ server_builder& server_builder::log_to_file(std::filesystem::path path,
 }
 
 int server_builder::run() {
-    // Start the configured chains. A chain that cannot start (unwritable
-    // directory, bad pattern) is reported and skipped: logging must never
-    // take the server down.
-    for (const fut::log::chain_options& chain : chains_) {
-        try {
-            fut::log::add_chain(chain);
-        } catch (const std::exception& e) {
-            std::fprintf(stderr, "fut: cannot start a log chain: %s\n", e.what());
-        }
-    }
-
     int exit_code = 1;
+    bool chains_ready = false;
     try {
         config cfg = load_config(cfg_file_);
         if (host_) cfg.host = *host_;
@@ -154,6 +160,16 @@ int server_builder::run() {
                 fut::log::warning("unknown log level '{}', falling back to info", level_name);
             }
         }
+        // Chains: an explicit builder policy wins over config.json, which
+        // wins over the compiled-in defaults. Patterns always come from
+        // outside -- the server has none of its own.
+        install_chains(chains_explicit_
+                           ? chains_
+                           : default_log_chains(cfg.log_pattern, cfg.log_file_pattern,
+                                                cfg.log_file, cfg.log_file_max_bytes,
+                                                cfg.log_file_max_files));
+        chains_ready = true;
+
         const std::chrono::seconds timeout =
             timeout_ ? *timeout_ : std::chrono::seconds(cfg.request_timeout_seconds);
 
@@ -197,6 +213,10 @@ int server_builder::run() {
         fut::log::core_log.info("stopped");
         exit_code = 0;
     } catch (const std::exception& e) {
+        if (!chains_ready) {
+            install_chains(default_log_chains());
+            chains_ready = true;
+        }
         fut::log::core_log.critical("fatal: {}", e.what());
     }
 

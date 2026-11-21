@@ -48,25 +48,38 @@ public:
     // trace. Rebuild it with clear_log_chains() + add_log_chain(), or use
     // one of the presets below (each preset clears what was there).
 
-    server_builder& clear_log_chains() { chains_.clear(); return *this; }
+    // Every parameter is caller data: the pattern, the file, the sizes and
+    // the levels all come from here or from config.json -- never from
+    // constants inside the server.
+
+    server_builder& clear_log_chains() { chains_.clear(); chains_explicit_ = true; return *this; }
 
     server_builder& add_log_chain(fut::log::chain_options chain) {
         chains_.push_back(std::move(chain));
+        chains_explicit_ = true;
         return *this;
     }
 
     /// Clear the chains and log to stdout only.
-    server_builder& log_to_console(bool color = true,
-                                   fut::log::level minimum = fut::log::level::info);
+    server_builder& log_to_console(
+        bool color = true, fut::log::level minimum = fut::log::level::info,
+        std::string_view pattern = fut::log::console_pattern);
 
     /// Clear the chains and log to a rotating file only.
-    server_builder& log_to_file(std::filesystem::path path,
-                                std::uint64_t max_bytes = std::uint64_t{2} << 20,
-                                std::uint32_t max_files = 3,
-                                fut::log::level minimum = fut::log::level::trace);
+    server_builder& log_to_file(
+        std::filesystem::path path, std::uint64_t max_bytes = std::uint64_t{2} << 20,
+        std::uint32_t max_files = 3, fut::log::level minimum = fut::log::level::trace,
+        std::string_view pattern = fut::log::file_pattern);
 
-    /// The stock set: colour console at info + rotating file at trace.
-    [[nodiscard]] static std::vector<fut::log::chain_options> default_log_chains();
+    /// The stock set (colour console at info + rotating file at trace) with
+    /// caller-supplied patterns and file settings.
+    [[nodiscard]] static std::vector<fut::log::chain_options> default_log_chains(
+        std::string_view console_pattern = fut::log::console_pattern,
+        std::string_view file_pattern = fut::log::file_pattern,
+        std::filesystem::path file_path = "logs/fut.log",
+        std::uint64_t max_bytes = std::uint64_t{2} << 20, std::uint32_t max_files = 3,
+        fut::log::level console_min = fut::log::level::info,
+        fut::log::level file_min = fut::log::level::trace);
 
     // Extra in-process routes, registered without any DLL. They belong to
     // the built-in "core" app alongside /api/core/status.
@@ -95,6 +108,10 @@ private:
     std::optional<std::string> log_level_;
     std::vector<extra_route> extra_routes_;
     std::vector<fut::log::chain_options> chains_{default_log_chains()};
+
+    // True once the embedder touched the chains: an explicit builder policy
+    // wins over config.json, which wins over the compiled-in defaults.
+    bool chains_explicit_ = false;
 };
 
 } // namespace fut::exec

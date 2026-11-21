@@ -368,25 +368,34 @@ int main() {
 }
 ```
 
-Logging is part of the builder too — the default set (colour console at info plus a rotating
-file at trace) can be replaced or extended:
+Logging is part of the builder too. Every logging parameter — patterns, file, sizes, levels — is
+caller data; the server has none of its own:
 
 ```cpp
 server_builder()
-    .clear_log_chains()                       // drop the defaults
-    .add_log_chain(fut::log::chain_options{   // any chain you want
+    .log_to_console(true, fut::log::level::debug, "[{L}] {m}")   // pattern in, not baked
+    .run();
+
+server_builder()
+    .clear_log_chains()
+    .add_log_chain(fut::log::chain_options{
         .minimum_level = fut::log::level::debug,
         .formatter = fut::log::json_formatter{},
         .sink = fut::log::file_sink{.path = "logs/json.log"},
     })
     .run();
 
-server_builder().log_to_console(true);                    // stdout only
-server_builder().log_to_file("logs/fut.log", 2 << 20, 3); // file only, rotating
+server_builder().log_to_file("logs/fut.log", 2 << 20, 3,
+                             fut::log::level::trace, "{T} {g}: {m}");
 ```
 
+Precedence: an explicit builder policy > `config.json` > the compiled-in default set
+(`server_builder::default_log_chains`, which itself takes the patterns and file settings as
+arguments — `fut::log::console_pattern` / `fut::log::file_pattern` are only the stock values).
+
 Chains start when `run()` begins; one that cannot start is reported on stderr and skipped, so a
-broken log path never takes the server down.
+broken log path never takes the server down. If the config file itself fails to parse, the
+default chains are installed before the fatal error is logged, so the message is not lost.
 
 The builder also registers a built-in `GET /api/core/status` route (service version, ABI, loaded
 apps and their route counts) and sets up the logging chains described below.
@@ -510,6 +519,11 @@ fut/
 | apps_dir | apps | app DLL directory; relative paths resolve against the executable |
 | request_timeout_seconds | 30 | per-request read timeout |
 | log_level | info | trace/debug/info/warning/error/critical/off (matched through reflection) |
+| log_pattern | `{T} [{L:<8}] {g:<12} {m}` | console chain formatter pattern |
+| log_file_pattern | `{T} [{L:<8}] {g:<12} {s}: {m}` | file chain formatter pattern |
+| log_file | logs/fut.log | rotating file sink path |
+| log_file_max_bytes | 2097152 | rotate above this size (0 disables rotation) |
+| log_file_max_files | 3 | backups kept as `<path>.1` … `<path>.<n-1>` |
 
 ## Tests
 

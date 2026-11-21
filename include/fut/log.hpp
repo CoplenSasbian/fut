@@ -115,6 +115,11 @@ struct pattern_formatter {
     std::string pattern;
 };
 
+/// The stock formatter patterns. Pass your own wherever a pattern is taken;
+/// these are only defaults.
+inline constexpr std::string_view console_pattern = "{T} [{L:<8}] {g:<12} {m}";
+inline constexpr std::string_view file_pattern = "{T} [{L:<8}] {g:<12} {s}: {m}";
+
 struct json_formatter {};
 
 /// One chain: a formatter plus a destination, plus its own level filter.
