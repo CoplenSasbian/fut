@@ -161,13 +161,9 @@ int server_builder::run() {
             }
         }
         // Chains: an explicit builder policy wins over config.json, which
-        // wins over the compiled-in defaults. Patterns always come from
-        // outside -- the server has none of its own.
-        install_chains(chains_explicit_
-                           ? chains_
-                           : default_log_chains(cfg.log_pattern, cfg.log_file_pattern,
-                                                cfg.log_file, cfg.log_file_max_bytes,
-                                                cfg.log_file_max_files));
+        // wins over the compiled-in defaults. Patterns, sinks and levels are
+        // all caller data -- the server has none of its own.
+        install_chains(chains_explicit_ ? chains_ : build_log_chains(cfg.log));
         chains_ready = true;
 
         const std::chrono::seconds timeout =

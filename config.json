@@ -6,9 +6,24 @@
   "request_timeout_seconds": 30,
   "log_level": "info",
 
-  "log_pattern": "{T} [{L:<8}] {g:<12} {m}",
-  "log_file_pattern": "{T} [{L:<8}] {g:<12} {s}: {m}",
-  "log_file": "logs/fut.log",
-  "log_file_max_bytes": 2097152,
-  "log_file_max_files": 3
+  "log": {
+    "chains": [
+      {
+        "sink": "console",
+        "level": "info",
+        "formatter": "pattern",
+        "pattern": "{T} [{L:<8}] {g:<12} {m}",
+        "color": true
+      },
+      {
+        "sink": "file",
+        "level": "trace",
+        "formatter": "pattern",
+        "pattern": "{T} [{L:<8}] {g:<12} {s}: {m}",
+        "path": "logs/fut.log",
+        "max_bytes": 2097152,
+        "max_files": 3
+      }
+    ]
+  }
 }

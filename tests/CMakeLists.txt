@@ -27,6 +27,15 @@ target_include_directories(test_reflect PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(test_reflect PRIVATE doctest::doctest)
 doctest_discover_tests(test_reflect)
 
+# Config file: the log chain list is a user-facing interface
+add_executable(test_config test_config.cpp ${PROJECT_SOURCE_DIR}/src/exec/config.cpp)
+target_include_directories(test_config PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src/exec
+)
+target_link_libraries(test_config PRIVATE doctest::doctest glaze::glaze)
+doctest_discover_tests(test_config)
+
 # C++26 scanner + controller registration + every binding style
 add_executable(test_reflect_router test_reflect_router.cpp)
 target_include_directories(test_reflect_router PRIVATE ${PROJECT_SOURCE_DIR}/include)

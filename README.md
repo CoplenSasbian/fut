@@ -393,6 +393,39 @@ Precedence: an explicit builder policy > `config.json` > the compiled-in default
 (`server_builder::default_log_chains`, which itself takes the patterns and file settings as
 arguments — `fut::log::console_pattern` / `fut::log::file_pattern` are only the stock values).
 
+The config file describes the same thing as a **list of chains**, so adding a second file or a JSON
+stream is an edit, not a rebuild:
+
+```json
+"log": {
+  "chains": [
+    { "sink": "console", "level": "info", "formatter": "pattern",
+      "pattern": "{T} [{L:<8}] {g:<12} {m}", "color": true },
+    { "sink": "file", "level": "trace", "formatter": "json",
+      "path": "logs/fut.jsonl", "max_bytes": 2097152, "max_files": 3 }
+  ]
+}
+```
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `level` | trace/debug/info/warning/error/critical/off | minimum level for this chain |
+| `formatter` | `pattern` \| `json` | `pattern` uses `pattern`, `json` writes one object per line |
+| `pattern` | format string | `{m}` message, `{t}/{T}` time, `{l}/{L}` level, `{g}` group, `{f}/{b}/{s}` file, `{u}` function, `{h}` thread |
+| `sink` | `console` \| `file` | destination |
+| `color` | bool | console only: ANSI colours |
+| `path` | string | file only: sink path (parent directories are created) |
+| `max_bytes` | number | file only: rotate above this size, 0 disables rotation |
+| `max_files` | number | file only: backups kept as `<path>.1` … `<path>.<n-1>` |
+
+An absent `log` section (or absent `chains`) means the stock set; an explicit `"chains": []`
+means no logging at all. Every field is validated: an unknown formatter, sink or level — or a file
+sink without a path — fails startup with a message naming the chain and the allowed values:
+
+```
+fatal: log.chains[0]: unknown formatter "xml" (expected "pattern" or "json")
+```
+
 Chains start when `run()` begins; one that cannot start is reported on stderr and skipped, so a
 broken log path never takes the server down. If the config file itself fails to parse, the
 default chains are installed before the fatal error is logged, so the message is not lost.
@@ -506,7 +539,7 @@ fut/
 │   └── detail/             log format/path helpers
 ├── src/exec/               server executable: builder, server, router, app_loader, config, log, main
 ├── apps/admin | apps/web   sample apps (controller style)
-└── tests/                  doctest suite (23 cases)
+└── tests/                  doctest suite (30 cases)
 ```
 
 ## Configuration (config.json)
@@ -518,17 +551,13 @@ fut/
 | threads | 2 | io_context threads (including the main thread) |
 | apps_dir | apps | app DLL directory; relative paths resolve against the executable |
 | request_timeout_seconds | 30 | per-request read timeout |
-| log_level | info | trace/debug/info/warning/error/critical/off (matched through reflection) |
-| log_pattern | `{T} [{L:<8}] {g:<12} {m}` | console chain formatter pattern |
-| log_file_pattern | `{T} [{L:<8}] {g:<12} {s}: {m}` | file chain formatter pattern |
-| log_file | logs/fut.log | rotating file sink path |
-| log_file_max_bytes | 2097152 | rotate above this size (0 disables rotation) |
-| log_file_max_files | 3 | backups kept as `<path>.1` … `<path>.<n-1>` |
+| log_level | info | global level: trace/debug/info/warning/error/critical/off (matched through reflection) |
+| log.chains | console(info) + file(trace) | list of log chains; see *The server builder* for the fields. Absent → stock set, `[]` → no logging |
 
 ## Tests
 
 ```bash
-ctest --preset release   # 23 cases
+ctest --preset release   # 30 cases
 ```
 
 * `test_router` — registration, app bookkeeping, full-path matching, literal-over-placeholder
@@ -538,4 +567,6 @@ ctest --preset release   # 23 cases
   class is *not* scanned.
 * `test_apps` — end-to-end: the loader loads the real DLLs, they register through `fut_ctx`, and
   the routes are driven exactly like the server does.
+* `test_config` — the config file as an interface: chain parsing, defaults, an explicit empty
+  list, and validation errors for unknown formatters, sinks, levels and file settings.
 * `test_log`, `test_reflect` — logging chains and std::meta utilities.
