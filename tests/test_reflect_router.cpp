@@ -111,6 +111,19 @@ struct [[=fut::controller("/grp")]] grouped_controller {
     asio::awaitable<greet_out> first() { co_return greet_out{"grouped"}; }
 };
 
+// An entity-agnostic annotation: plain operation(ctx), no template parameter.
+// Useful for app-wide setup that does not depend on which class carries it.
+struct always_health : fut::scannable {
+    void operation(fut::fut_ctx* ctx) const {
+        const fut::http::router_module* rm = fut::http::router_of(ctx);
+        if (!rm || !rm->add_route) return;
+        rm->add_route(rm->self, fut::method::GET,
+                      fut::join_path(ctx->app_prefix, "/health"), &health_route);
+    }
+};
+
+struct [[=always_health{}]] app_marker {};
+
 struct [[=with_health("/mon")]] monitored_controller {
     [[=fut::http_get("/ping")]]
     asio::awaitable<greet_out> ping() { co_return greet_out{"monitored"}; }
@@ -217,7 +230,7 @@ TEST_SUITE("scanned controller registration") {
 
 TEST_CASE("the scan registers every verb-annotated member, prefix composed") {
     harness h{"/api/demo"};
-    REQUIRE(h.s.routes.size() == 12);  // 8 main + 1 grouped + 1 nested + 2 monitored
+    REQUIRE(h.s.routes.size() == 13);  // 8 main + 1 grouped + 1 nested + 2 monitored + 1 app-wide
 
     CHECK(h.find(fut::method::GET, "/api/demo/ping") != nullptr);
     CHECK(h.find(fut::method::POST, "/api/demo/add") != nullptr);
@@ -228,6 +241,18 @@ TEST_CASE("the scan registers every verb-annotated member, prefix composed") {
     // the derived annotation: inherited member route + its own extra route
     CHECK(h.find(fut::method::GET, "/api/demo/mon/ping") != nullptr);
     CHECK(h.find(fut::method::GET, "/api/demo/mon/health") != nullptr);
+
+    // the entity-agnostic annotation: plain operation(ctx), no template
+    CHECK(h.find(fut::method::GET, "/api/demo/health") != nullptr);
+}
+
+TEST_CASE("an entity-agnostic annotation is dispatched too") {
+    harness h{"/api/demo"};
+    const auto res = drive(h.s, fut::method::GET, "/api/demo/health");
+    CHECK(res.status == 200);
+    const auto v = fut::parse<health_dto>(res.body);
+    REQUIRE(v.has_value());
+    CHECK(v->ok == true);
 }
 
 TEST_CASE("a derived annotation composes the base operation") {
@@ -252,7 +277,7 @@ TEST_CASE("the scan does not recurse into classes") {
     harness h{"/api/demo"};
     // 10 routes: the nested controller inside main_controller was skipped,
     // because only namespaces are recursed into.
-    CHECK(h.s.routes.size() == 12);
+    CHECK(h.s.routes.size() == 13);
     CHECK(h.find(fut::method::GET, "/api/demo/inner/hidden") == nullptr);
     CHECK(drive(h.s, fut::method::GET, "/api/demo/inner/hidden").status == 404);
 }

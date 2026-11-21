@@ -14,14 +14,22 @@
 // So a controller class nested inside another class is invisible to the
 // scan, while a controller in a nested namespace is found.
 //
-// Each annotation is called as an object:
+// The hook is found BY REFLECTION, not by a hard-coded call: the scanner
+// reflects the annotation type's members, takes the one named `operation`
+// and splices the call. Both shapes are accepted:
 //
-//     constexpr auto self = [: std::meta::constant_of(annotation) :];
-//     self.template operation<Entity>(ctx)
+//     template <std::meta::info Entity>          // entity-aware hook
+//     void operation(fut::fut_ctx*) const;
 //
-// The annotation's own members are its configuration (`this`); everything
-// else it may need (the app prefix, server services) comes from the
-// context, never from the scanner.
+//     void operation(fut::fut_ctx*) const;      // entity-agnostic hook
+//
+// GCC reflects a member function TEMPLATE as is_template == true /
+// is_function == false, which is how the two shapes are told apart. An
+// annotation with neither gets an explanatory static_assert, not silence.
+//
+// The annotation value is the object: `self.*` is its configuration.
+// Everything else it may need (the app prefix, server services) comes from
+// the context, never from the scanner.
 //
 // Everything here is a `template for` expansion over reflection ranges: no
 // fixed-size caps, no index packs, no per-index helper templates. Reflection
@@ -33,6 +41,7 @@
 // to this file.
 
 #include <meta>
+#include <type_traits>
 #include <vector>
 
 #include <fut/scannable.hpp>
@@ -63,14 +72,66 @@ consteval std::vector<meta::info> scannable_annotations() {
     return out;
 }
 
+namespace detail {
+
+// A member function named `operation`, in either shape.
+consteval bool is_hook(meta::info m) {
+    if (!meta::has_identifier(m) || meta::identifier_of(m) != "operation") return false;
+    try {
+        if (meta::is_template(m)) return true;   // member function template
+    } catch (...) {
+    }
+    return meta::is_function(m);                 // plain member function
+}
+
+consteval bool is_entity_hook(meta::info m) {
+    try {
+        return meta::is_template(m);
+    } catch (...) {
+        return false;
+    }
+}
+
+// Used only for the diagnostic: an annotation without a hook would otherwise
+// be a silent no-op.
+template <class Ann>
+consteval bool has_hook() {
+    template for (constexpr meta::info m : std::define_static_array(
+                      meta::members_of(^^Ann, meta::access_context::unchecked())))
+        if (is_hook(m)) return true;
+    return false;
+}
+
+template <meta::info Ann, meta::info Entity>
+void call_hooks(fut_ctx* ctx) {
+    constexpr auto self = [: meta::constant_of(Ann) :];
+    using Self = std::remove_cvref_t<decltype(self)>;
+
+    static_assert(has_hook<Self>(),
+                  "fut: a scannable annotation needs an 'operation' hook -- either "
+                  "'template <std::meta::info Entity> void operation(fut::fut_ctx*) const' "
+                  "(entity-aware) or 'void operation(fut::fut_ctx*) const' "
+                  "(entity-agnostic)");
+
+    template for (constexpr meta::info m : std::define_static_array(
+                      meta::members_of(^^Self, meta::access_context::unchecked()))) {
+        if constexpr (is_hook(m)) {
+            if constexpr (is_entity_hook(m))
+                self.template [: m :]<Entity>(ctx);
+            else
+                self.[: m :](ctx);
+        }
+    }
+}
+
+} // namespace detail
+
 // Every scannable annotation on one entity, never descending into it.
 template <meta::info Entity>
 void visit_entity(fut_ctx* ctx) {
-    template for (constexpr meta::info a :
-                  std::define_static_array(scannable_annotations<Entity>())) {
-        constexpr auto self = [: meta::constant_of(a) :];
-        self.template operation<Entity>(ctx);
-    }
+    template for (constexpr meta::info ann :
+                  std::define_static_array(scannable_annotations<Entity>()))
+        detail::call_hooks<ann, Entity>(ctx);
 }
 
 template <meta::info Ns>

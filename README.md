@@ -208,11 +208,13 @@ for each DIRECT member of the namespace:
     otherwise                 -> call every scannable annotation found ON it, once, never descend
 ```
 
-The call is made on the annotation object itself:
+The call is made on the annotation object itself, with the hook located by reflection:
 
 ```cpp
 constexpr auto self = [: std::meta::constant_of(annotation) :];
-self.template operation<Entity>(ctx);        // self.* is the annotation's configuration
+template for (constexpr auto m : members_of(^^decltype(self)))   // find "operation"
+    if constexpr (is_hook(m))
+        self.template [: m :]<Entity>(ctx);   // or self.[: m :](ctx) when it is not a template
 ```
 
 So a controller in a nested namespace **is** found, while a controller class nested inside another
@@ -299,21 +301,42 @@ functions returning values you can use as annotations:
 
 ## Adding a new scannable annotation
 
-Derive `fut::scannable` and give it a member `operation`; nothing else changes:
+Derive `fut::scannable` and give it a member `operation`; nothing else changes. The scanner
+finds the hook **by reflection** — it reflects the annotation type's members, takes the one named
+`operation` and splices the call — so two shapes are accepted:
 
 ```cpp
 struct my_annotation : fut::scannable {
     int priority = 0;
 
-    template <std::meta::info Entity>
+    template <std::meta::info Entity>                 // entity-aware
     void operation(fut::fut_ctx* ctx) const {
         // `this` is the annotation value attached to Entity (priority, path, ...);
-        // ctx gives the app identity and any server module.
+        // Entity is the class the annotation sits on; ctx gives the app identity
+        // and any server module.
+    }
+};
+
+struct my_app_annotation : fut::scannable {
+    void operation(fut::fut_ctx* ctx) const {         // entity-agnostic
+        // app-wide work that does not depend on the annotated class
     }
 };
 
 struct [[=fut::my_annotation{.priority = 5}]] some_class { ... };
+struct [[=my_app_annotation{}]] app_marker { ... };
 ```
+
+An annotation with no hook is a **compile error**, not a silent no-op:
+
+```
+error: static assertion failed: fut: a scannable annotation needs an 'operation' hook -- either
+'template <std::meta::info Entity> void operation(fut::fut_ctx*) const' (entity-aware) or
+'void operation(fut::fut_ctx*) const' (entity-agnostic)
+```
+
+(GCC reflects a member function *template* as `is_template == true`, `is_function == false`; that
+is how the two shapes are told apart.)
 
 The scanner needs no change, `add_app` needs no change, and the new annotation can live in any
 module (including one that never includes the HTTP headers).
