@@ -16,6 +16,7 @@
 //
 // The app module entry point (FUT_EXPORT_APP_NS) is generic and lives in
 // <fut/app.hpp>; a generated export unit includes that instead of this.
+// This header only says how HTTP routes are declared.
 
 #include <fut/http/route.hpp>
 #include <fut/http/router.hpp>

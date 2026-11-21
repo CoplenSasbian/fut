@@ -113,14 +113,18 @@ struct harness {
     sink s{};
     fut::fut_ctx ctx{};
 
-    explicit harness(std::string_view prefix) {
+    explicit harness(std::string_view prefix) : prefix_storage(prefix) {
         ctx.host = &s;
+        ctx.app_name = "demo";
+        ctx.app_prefix = prefix_storage;
         ctx.get_module_fn = [](fut::fut_ctx* c, std::string_view name) -> void* {
             if (name == "router") return &static_cast<sink*>(c->host)->module;
             return nullptr;
         };
-        fut::scan::run<^^demo_actions>(&ctx, prefix);
+        fut::scan::run<^^demo_actions>(&ctx);
     }
+
+    std::string prefix_storage;
 
     [[nodiscard]] const sink::route* find(fut::method m, std::string_view pattern) const {
         for (const auto& r : s.routes)

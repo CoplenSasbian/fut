@@ -8,16 +8,17 @@
 // http_action.
 //
 // fut::controller derives fut::scannable: the global scanner (fut/scan.hpp)
-// finds controller-annotated CLASS TYPES and calls
+// finds controller-annotated CLASS TYPES, materialises the annotation value
+// and calls its member
 //
-//     controller::operation<TheClass>(ctx, prefix)
+//     annotation.template operation<TheClass>(ctx)
 //
 // which walks the class's member functions, reads each verb annotation, and
-// registers one route per method with the router module. The route path is
+// registers one route per method with the router module. The path is
 // composed from three parts:
 //
-//     add_app(admin /api/admin ...)  ->  "/api/admin"   (compile-time macro)
-//     [[=fut::controller("/users")]] ->  "/users"       (class annotation)
+//     ctx->app_prefix                ->  "/api/admin"   (app identity)
+//     [[=fut::controller("/users")]] ->  "/users"       (the annotation)
 //     [[=fut::http_get("/{id}")]]    ->  "/{id}"        (method annotation)
 //
 //     => "/api/admin/users/{id}"
@@ -78,10 +79,11 @@ struct controller : scannable {
     constexpr controller() = default;
     constexpr controller(std::string_view s) : path(s) {}
 
-    // The scan contract. Walks the members of `Entity`, registers one route
-    // per verb-annotated member function.
+    // The scan contract (a member function: `this` is the annotation's own
+    // value, so path is this->path). Walks the members of `Entity` and
+    // registers one route per verb-annotated member function.
     template <std::meta::info Entity>
-    static void operation(::fut::fut_ctx* ctx, std::string_view prefix);
+    void operation(::fut::fut_ctx* ctx) const;
 };
 
 // ---- controller internals -------------------------------------------------
@@ -111,31 +113,17 @@ consteval std::array<std::meta::info, N> verb_anns() {
     return out;
 }
 
-// The controller annotation of the class (a struct value, not cv-qualified).
-template <std::size_t N, std::meta::info Entity>
-consteval std::array<std::meta::info, N> self_anns() {
-    std::array<std::meta::info, N> out{};
-    std::size_t i = 0;
-    for (auto a : std::meta::annotations_of(Entity))
-        if (i < N && std::meta::is_base_of_type(^^fut::controller, std::meta::type_of(a)))
-            out[i++] = a;
-    return out;
-}
-
 template <std::meta::info Entity, std::size_t M>
-void register_member(const ::fut::http::router_module* rm, std::string_view prefix) {
+void register_member(const ::fut::http::router_module* rm, std::string_view app_prefix,
+                     std::string_view class_path) {
     constexpr auto ms = members<Entity>();
     if constexpr (M < max_members && ms[M] != std::meta::info{}) {
         constexpr std::meta::info member = ms[M];
         constexpr auto verbs = verb_anns<1, member>();
         if constexpr (verbs[0] != std::meta::info{}) {
             constexpr auto verb = [: std::meta::constant_of(verbs[0]) :];
-
-            constexpr auto selfs = self_anns<1, Entity>();
-            constexpr auto ctl = [: std::meta::constant_of(selfs[0]) :];
-
             const std::string pattern =
-                ::fut::join_path(prefix, ctl.path.view(), verb.path.view());
+                ::fut::join_path(app_prefix, class_path, verb.path.view());
             rm->add_route(rm->self, static_cast<::fut::method>(verb.method_val), pattern,
                           &::fut::refl::invoke_member_route<Entity, member>);
         }
@@ -145,14 +133,16 @@ void register_member(const ::fut::http::router_module* rm, std::string_view pref
 } // namespace ctrl
 
 template <std::meta::info Entity>
-void controller::operation(::fut::fut_ctx* ctx, std::string_view prefix) {
+void controller::operation(::fut::fut_ctx* ctx) const {
     static_assert(std::meta::is_type(Entity) && std::meta::is_class_type(Entity),
                   "fut::controller must annotate a class type -- the scanner hands it "
                   "whatever carries the annotation, and a controller reads class members");
     const ::fut::http::router_module* rm = ::fut::http::router_of(ctx);
     if (!rm || !rm->add_route) return;
+    const std::string_view app_prefix = ctx ? ctx->app_prefix : std::string_view{};
+    const std::string_view class_path = this->path.view();
     [&]<std::size_t... M>(std::index_sequence<M...>) {
-        (ctrl::register_member<Entity, M>(rm, prefix), ...);
+        (ctrl::register_member<Entity, M>(rm, app_prefix, class_path), ...);
     }(std::make_index_sequence<ctrl::max_members>());
 }
 

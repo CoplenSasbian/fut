@@ -2,19 +2,27 @@
 
 // fut/scannable.hpp -- the global scan contract.
 //
-// An annotation derives this when it has work to do at scan time:
+// An annotation derives this when it has work to do at scan time. The work
+// is an ordinary member function on the annotation itself:
 //
 //     struct my_annotation : fut::scannable {
+//         int priority = 0;
+//
 //         template <std::meta::info Entity>
-//         static void operation(fut::fut_ctx* ctx, std::string_view prefix);
+//         void operation(fut::fut_ctx* ctx) const;
 //     };
 //
-// A scanner walks a namespace and, for every CLASS TYPE carrying a
-// scannable-derived annotation, calls that annotation's operation<Entity>(),
-// passing the entity it was found on, the context, and the app prefix (the
-// add_app() prefix, injected as the FUT_APP_PREFIX compile definition).
-// The scanner knows nothing about what operation() does -- routes, config,
-// code generation, anything.
+// The scanner finds an annotated entity, materialises the annotation value
+// that was attached to it, and calls
+//
+//     annotation.template operation<Entity>(ctx)
+//
+// so the annotation receives exactly two things: the entity it is attached
+// to (as a template argument) and the context. The annotation's own members
+// are simply `this` -- its configured path, key, priority, whatever it
+// carries. Nothing else is threaded through: the app prefix, the app name
+// and every server service come from the context, which keeps the scanner
+// ignorant of what an annotation means.
 //
 // fut::controller (fut/http/annotate.hpp) is the built-in implementation:
 // it reads the verb annotations off the class's member functions and
@@ -22,7 +30,6 @@
 
 #include <cstddef>
 #include <meta>
-#include <string_view>
 
 #include <fut/ctx.hpp>
 

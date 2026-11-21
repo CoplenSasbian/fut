@@ -2,7 +2,7 @@
 
 // fut/scan.hpp -- the generic namespace scanner.
 //
-//     fut::scan::run<^^admin>(ctx, "/api/admin");
+//     fut::scan::run<^^admin>(ctx);
 //
 // Recursion rule (exactly one level, namespaces only):
 //
@@ -13,8 +13,16 @@
 //     and that is the end of it.
 //
 // So a controller class nested inside another class is invisible to the
-// scan, while a controller in a nested namespace is found. The annotation's
-// operation<Entity>() decides what to do with the entity it was given.
+// scan, while a controller in a nested namespace is found.
+//
+// Each annotation found on a member is called as an object:
+//
+//     constexpr auto self = [: constant_of(annotation) :];
+//     self.template operation<Entity>(ctx)
+//
+// The annotation's own members are its configuration (`this`); everything
+// else it may need (the app prefix, server services) comes from the
+// context, never from the scanner.
 //
 // Nothing here knows about HTTP: a new scannable annotation needs no change
 // to this file.
@@ -22,7 +30,6 @@
 #include <array>
 #include <cstddef>
 #include <meta>
-#include <string_view>
 #include <utility>
 
 #include <fut/scannable.hpp>
@@ -62,47 +69,48 @@ consteval std::array<meta::info, N> ns_members() {
     return out;
 }
 
-// Hand one annotated entity to one annotation.
+// Hand one annotated entity to one annotation. The annotation value is the
+// object; calling it as a member is the whole extension mechanism.
 template <meta::info Ann, meta::info Entity>
-void call_op(fut_ctx* ctx, std::string_view prefix) {
-    using Op = [: meta::dealias(meta::type_of(Ann)) :];
-    Op::template operation<Entity>(ctx, prefix);
+void call_op(fut_ctx* ctx) {
+    constexpr auto self = [: meta::constant_of(Ann) :];
+    self.template operation<Entity>(ctx);
 }
 
 template <meta::info Entity, std::size_t A>
-void run_entity(fut_ctx* ctx, std::string_view prefix) {
+void run_entity(fut_ctx* ctx) {
     constexpr auto ops = entity_ops<max_entity_annotations, Entity>();
     if constexpr (A < max_entity_annotations && ops[A] != meta::info{})
-        call_op<ops[A], Entity>(ctx, prefix);
+        call_op<ops[A], Entity>(ctx);
 }
 
 // Every scannable annotation on one entity, never descending into it.
 template <meta::info Entity>
-void run_entity(fut_ctx* ctx, std::string_view prefix) {
+void run_entity(fut_ctx* ctx) {
     [&]<std::size_t... A>(std::index_sequence<A...>) {
-        (run_entity<Entity, A>(ctx, prefix), ...);
+        (run_entity<Entity, A>(ctx), ...);
     }(std::make_index_sequence<max_entity_annotations>());
 }
 
 template <meta::info Ns>
-void run(fut_ctx* ctx, std::string_view prefix);
+void run(fut_ctx* ctx);
 
 template <meta::info Ns, std::size_t M>
-void run_member(fut_ctx* ctx, std::string_view prefix) {
+void run_member(fut_ctx* ctx) {
     constexpr auto ms = ns_members<max_ns_members, Ns>();
     if constexpr (M < max_ns_members && ms[M] != meta::info{}) {
         constexpr meta::info m = ms[M];
         if constexpr (meta::is_namespace(m))
-            run<m>(ctx, prefix);              // the only recursion
+            run<m>(ctx);              // the only recursion
         else
-            run_entity<m>(ctx, prefix);       // handed over, never descended
+            run_entity<m>(ctx);       // handed over, never descended
     }
 }
 
 template <meta::info Ns>
-void run(fut_ctx* ctx, std::string_view prefix) {
+void run(fut_ctx* ctx) {
     [&]<std::size_t... M>(std::index_sequence<M...>) {
-        (run_member<Ns, M>(ctx, prefix), ...);
+        (run_member<Ns, M>(ctx), ...);
     }(std::make_index_sequence<max_ns_members>());
 }
 

@@ -8,7 +8,8 @@ swapping the file — the server and every other app stay untouched.
 An app DLL exports exactly one function, `fut_app_register(fut::fut_ctx*)`. Through the context it
 reaches the server's services ("modules") without linking against the executable, and registers its
 routes into the server's router. Which annotations produce those routes is the app's business: the
-scanner only knows *"an annotation derived from `fut::scannable` gets its `operation()` called"*.
+scanner only knows *"an annotation derived from `fut::scannable` has a member `operation()`"* --
+it calls it on the annotation object with the context.
 
 Reflection is a **hard requirement**: the library is built on `std::meta` (P2996) and has no
 reflection-free fallback path.
@@ -86,10 +87,11 @@ curl http://127.0.0.1:8080/api/admin/raw                  # plain text, text/pla
 ```
 server                                        app DLL
   LoadLibrary("fut_app_admin.dll")
-  fut_app_register(ctx)  ───────────────────▶  scan::run<^^admin>(ctx, "/api/admin")
+  ctx.app_name/app_prefix set from the exports
+  fut_app_register(ctx)  ───────────────────▶  scan::run<^^admin>(ctx)
                                                   │
   ctx.get_module("router")  ◀───────────────────┤  find [[=fut::controller]] classes
-   -> void*, cast to router_module*              │
+   -> void*, cast to router_module*              │  call annotation.operation<Class>(ctx)
                                                   ▼
   router.add_route(self, GET, "/api/admin/ping", &fn)
 ```
@@ -98,6 +100,9 @@ server                                        app DLL
 * `fut_ctx` is the whole contract between them: a module lookup plus a server-private `host`.
 * `get_module()` returns `void*`; the caller casts it to the type agreed for that module name.
   Casting to any other type is undefined behaviour.
+* `ctx.app_name` / `ctx.app_prefix` are the app's identity, filled by the server from the DLL's
+  exports before registration -- which is how annotations compose absolute paths without the
+  scanner ever carrying a prefix argument.
 * The loader checks `fut_abi_version()` and skips mismatched DLLs; `fut_app_name()` /
   `fut_app_prefix()` are used for logging and `/api/core/status`.
 
@@ -184,21 +189,30 @@ std::uint32_t fut_abi_version();
 const char*   fut_app_name();
 const char*   fut_app_prefix();
 void          fut_app_register(fut::fut_ctx* ctx) {
-    fut::scan::run<^^web>(ctx, "/api/web");
+    fut::scan::run<^^web>(ctx);
 }
 }
 ```
 
-**The prefix comes from the macro.** It is baked in as the `FUT_APP_PREFIX` compile definition from
-the `add_app()` call and handed to every scannable annotation, which composes it into the route
-paths it registers. The executable never learns which prefixes exist at build time.
+**The prefix comes from the macro** -- as the app's identity, not as a scanner argument. It is baked
+in as the `FUT_APP_PREFIX` compile definition from the `add_app()` call, exported by
+`fut_app_prefix()`, and placed into `ctx.app_prefix` by the server before it calls
+`fut_app_register`. Annotations read it from the context and compose absolute paths; the scanner
+never learns that a prefix exists.
 
 ### Scan rule: one level, namespaces only
 
 ```
 for each DIRECT member of the namespace:
     if it is a namespace      -> recurse into it
-    otherwise                 -> hand it to the annotation found ON it, once, and never descend
+    otherwise                 -> call every scannable annotation found ON it, once, never descend
+```
+
+The call is made on the annotation object itself:
+
+```cpp
+constexpr auto self = [: std::meta::constant_of(annotation) :];
+self.template operation<Entity>(ctx);        // self.* is the annotation's configuration
 ```
 
 So a controller in a nested namespace **is** found, while a controller class nested inside another
@@ -285,19 +299,20 @@ functions returning values you can use as annotations:
 
 ## Adding a new scannable annotation
 
-Derive `fut::scannable` and implement the contract; nothing else changes:
-
-```cpp
-struct [[=fut::my_annotation(...)]] some_class { ... };
-```
+Derive `fut::scannable` and give it a member `operation`; nothing else changes:
 
 ```cpp
 struct my_annotation : fut::scannable {
+    int priority = 0;
+
     template <std::meta::info Entity>
-    static void operation(fut::fut_ctx* ctx, std::string_view prefix) {
-        // do whatever the annotation is for
+    void operation(fut::fut_ctx* ctx) const {
+        // `this` is the annotation value attached to Entity (priority, path, ...);
+        // ctx gives the app identity and any server module.
     }
 };
+
+struct [[=fut::my_annotation{.priority = 5}]] some_class { ... };
 ```
 
 The scanner needs no change, `add_app` needs no change, and the new annotation can live in any

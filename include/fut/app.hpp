@@ -8,7 +8,7 @@
 // not care which annotations the app uses.
 //
 //   extern "C" FUT_EXPORT void fut_app_register(fut::fut_ctx* ctx) {
-//       fut::scan::run<^^admin>(ctx, "/api/admin");
+//       fut::scan::run<^^admin>(ctx);
 //   }
 //
 // FUT_EXPORT_APP_NS emits that function plus the three reporting exports:
@@ -17,9 +17,11 @@
 //   fut_app_name() / _prefix()   logging and the status endpoint
 //   fut_app_register(ctx)        the one function the server calls
 //
-// The app prefix (add_app's second argument) is baked in as the
-// FUT_APP_PREFIX compile definition and handed to every scannable
-// annotation through scan::run, so the module composes its own paths.
+// The app identity travels through the context, not through the scanner:
+// the server fills fut_ctx::app_name / app_prefix from the exports above
+// before it calls fut_app_register, so an annotation composes absolute
+// paths from ctx->app_prefix while the scanner only ever passes
+// (ctx, the annotation itself).
 
 #include <cstdint>
 
@@ -36,6 +38,6 @@
     FUT_EXPORT const char* fut_app_name() { return (NAME); }                       \
     FUT_EXPORT const char* fut_app_prefix() { return (PREFIX); }                   \
     FUT_EXPORT void fut_app_register(::fut::fut_ctx* fut_ctx_ptr) {                \
-        ::fut::scan::run<(NS)>(fut_ctx_ptr, (PREFIX));                             \
+        ::fut::scan::run<(NS)>(fut_ctx_ptr);                                      \
     }                                                                              \
     }

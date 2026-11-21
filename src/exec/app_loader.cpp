@@ -109,6 +109,8 @@ std::vector<app_loader::entry> app_loader::load_dir(const std::filesystem::path&
         fut::fut_ctx ctx{};
         ctx.host = &rt;
         ctx.get_module_fn = &module_lookup;
+        ctx.app_name = name;
+        ctx.app_prefix = prefix;
         (*reg)(&ctx);
         const std::size_t routes = rt.apps().back().routes;
         rt.end_app();

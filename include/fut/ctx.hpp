@@ -15,6 +15,11 @@
 // agreed for that module name; casting to any other type is undefined
 // behaviour. No module is known here -- this header is the whole contract
 // between the executable and the libraries it loads.
+//
+// app_name / app_prefix identify the module being registered. The server
+// fills them from the DLL's fut_app_name() / fut_app_prefix() exports
+// before it calls fut_app_register, so an annotation can compose absolute
+// paths without the scanner ever knowing what a prefix is.
 
 #include <string_view>
 
@@ -26,6 +31,10 @@ struct fut_ctx {
 
     // Module lookup: the interface registered under `name`, or nullptr.
     void* (*get_module_fn)(fut_ctx*, std::string_view) = nullptr;
+
+    // Identity of the app currently registering (set by the server).
+    std::string_view app_name{};
+    std::string_view app_prefix{};
 
     [[nodiscard]] void* get_module(std::string_view name) const {
         return get_module_fn ? get_module_fn(const_cast<fut_ctx*>(this), name) : nullptr;
