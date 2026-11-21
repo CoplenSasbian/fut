@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cctype>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -79,6 +80,20 @@ struct text_buf {
 // request / response
 // ---------------------------------------------------------------------------
 
+namespace detail {
+
+inline bool iequals(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        const auto ca = static_cast<unsigned char>(a[i]);
+        const auto cb = static_cast<unsigned char>(b[i]);
+        if (std::tolower(ca) != std::tolower(cb)) return false;
+    }
+    return true;
+}
+
+} // namespace fut::detail
+
 struct request {
     std::string_view method{};   // "GET" / "POST" / ...
     std::string_view target{};   // raw request target (with query)
@@ -86,6 +101,13 @@ struct request {
     std::string_view query{};    // everything after '?'
     std::string_view body{};     // request body
     std::span<const std::pair<std::string_view, std::string_view>> headers{};
+
+    // Case-insensitive header lookup (HTTP header names are). Empty when absent.
+    [[nodiscard]] std::string_view header(std::string_view name) const {
+        for (const auto& [key, value] : headers)
+            if (detail::iequals(key, name)) return value;
+        return {};
+    }
 };
 
 struct response {

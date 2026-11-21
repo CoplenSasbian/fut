@@ -34,4 +34,20 @@ struct from_header {
     constexpr from_header(std::string_view k) : key(k) {}
 };
 
+// A form field: application/x-www-form-urlencoded, or the text parts of
+// multipart/form-data. An empty key falls back to the parameter name.
+struct from_form {
+    detail::text_buf<annot_key_max> key;
+    constexpr from_form() = default;
+    constexpr from_form(std::string_view k) : key(k) {}
+};
+
+// An uploaded file from multipart/form-data. The parameter type must be
+// fut::uploaded_file. An empty key falls back to the parameter name.
+struct from_file {
+    detail::text_buf<annot_key_max> key;
+    constexpr from_file() = default;
+    constexpr from_file(std::string_view k) : key(k) {}
+};
+
 } // namespace fut

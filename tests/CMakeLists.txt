@@ -27,6 +27,18 @@ target_include_directories(test_reflect PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(test_reflect PRIVATE doctest::doctest)
 doctest_discover_tests(test_reflect)
 
+# Form bodies: urlencoded + multipart parsing
+add_executable(test_form test_form.cpp)
+target_include_directories(test_form PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src/exec
+)
+target_link_libraries(test_form PRIVATE doctest::doctest Boost::asio glaze::glaze)
+if(WIN32)
+    target_link_libraries(test_form PRIVATE ws2_32)
+endif()
+doctest_discover_tests(test_form)
+
 # HTTP message layer: llhttp parsing + response serialization
 add_executable(test_http_parser test_http_parser.cpp
     ${PROJECT_SOURCE_DIR}/src/exec/http_parser.cpp

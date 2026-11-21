@@ -3,6 +3,7 @@
 
 #include <cstdlib>
 #include <exception>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -36,7 +37,8 @@ asio::awaitable<void> invoke_into(run_state& st, fut::http::route_fn fn, fut::re
 
 // Dispatches exactly like the server: router match, then invoke.
 fut::response run(fut::exec::router& rt, fut::method m, std::string_view path,
-                  std::string_view body = {}, std::string_view query = {}) {
+                  std::string_view body = {}, std::string_view query = {},
+                  std::span<const std::pair<std::string_view, std::string_view>> headers = {}) {
     const auto hit = rt.match(m, path);
     if (!hit) return fut::error(404, "no route");
 
@@ -44,7 +46,8 @@ fut::response run(fut::exec::router& rt, fut::method m, std::string_view path,
     run_state st;
     asio::co_spawn(ioc,
                    invoke_into(st, hit->route->invoke,
-                               fut::request{fut::to_string(m), path, path, query, body, {}},
+                               fut::request{fut::to_string(m), path, path, query, body,
+                                            headers},
                                hit->params),
                    [](std::exception_ptr) {});
     ioc.run();
@@ -84,7 +87,7 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
     REQUIRE(web != nullptr);
     CHECK(admin->prefix == "/api/admin");
     CHECK(web->prefix == "/api/web");
-    CHECK(admin->routes == 8);  // 6 flat + 2 inside users_controller
+    CHECK(admin->routes == 9);  // 7 flat + 2 inside users_controller
     CHECK(web->routes == 7);    // 6 flat + 1 inside web::beta
 
     SUBCASE("admin /ping") {
@@ -107,6 +110,37 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
         CHECK(v->message == "hi");
         CHECK(v->doubled == 8);
         CHECK(v->sum == 10);
+    }
+
+    SUBCASE("admin /upload -- multipart file upload") {
+        struct upload_out {
+            std::string title{};
+            std::string filename{};
+            std::size_t size{};
+            std::string content_type{};
+        };
+        std::string body;
+        const std::string d = "--fut\r\n";
+        body += d;
+        body += "Content-Disposition: form-data; name=\"title\"\r\n\r\n";
+        body += "quarterly\r\n";
+        body += d;
+        body += "Content-Disposition: form-data; name=\"file\"; filename=\"q.txt\"\r\n";
+        body += "Content-Type: text/plain\r\n\r\n";
+        body += "hello from a DLL route\r\n";
+        body += "--fut--\r\n";
+
+        const std::pair<std::string_view, std::string_view> headers[] = {
+            {"Content-Type", "multipart/form-data; boundary=fut"}};
+
+        const auto res = run(rt, fut::method::POST, "/api/admin/upload", body, {}, headers);
+        CHECK(res.status == 200);
+        const auto v = fut::parse<upload_out>(res.body);
+        REQUIRE(v.has_value());
+        CHECK(v->title == "quarterly");
+        CHECK(v->filename == "q.txt");
+        CHECK(v->size == std::string_view("hello from a DLL route").size());
+        CHECK(v->content_type == "text/plain");
     }
 
     SUBCASE("admin /echo -- invalid JSON -> 400") {

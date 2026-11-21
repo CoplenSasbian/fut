@@ -58,14 +58,21 @@ struct echo_out {
 
 struct info_dto {
     std::string app{"admin"};
-    std::vector<std::string> routes{"/ping",   "/info",  "/meta", "/echo",
-                                    "/whoami", "/raw",   "/users/hits",
+    std::vector<std::string> routes{"/ping",   "/info",  "/meta",  "/echo",
+                                    "/whoami", "/raw",   "/upload", "/users/hits",
                                     "/users/{id}/name"};
 };
 
 struct whoami_dto {
     std::string app{"admin"};
     std::string user{"root"};
+};
+
+struct upload_out {
+    std::string title{};
+    std::string filename{};
+    std::size_t size{};
+    std::string content_type{};
 };
 
 struct hits_out { std::uint64_t hits{}; };
@@ -114,6 +121,13 @@ struct [[=fut::controller{}]] admin_controller {
 
     [[=fut::http_get("/whoami")]]
     asio::awaitable<whoami_dto> whoami() { co_return whoami_dto{}; }
+
+    // multipart/form-data: a text field plus an uploaded file
+    [[=fut::http_post("/upload")]]
+    asio::awaitable<upload_out> upload([[=fut::from_form{}]] std::string title,
+                                       [[=fut::from_file{}]] fut::uploaded_file file) {
+        co_return upload_out{title, file.filename, file.size(), file.content_type};
+    }
 
     // plain std::string return -> served as text/plain
     [[=fut::http_get("/raw")]]

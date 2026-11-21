@@ -10,6 +10,7 @@
 
 #include <array>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -24,6 +25,7 @@
 #endif
 
 #include <fut/http/bind.hpp>
+#include <fut/http/form.hpp>
 #include <fut/json.hpp>
 #include <fut/http/route.hpp>
 #include <fut/url.hpp>
@@ -69,8 +71,27 @@ consteval std::string_view param_key() {
     }
 }
 
+// True when any parameter asks for a form field or an uploaded file; the
+// caller then parses the body once instead of once per parameter.
+template <meta::info F>
+consteval bool needs_form() {
+    // Iterate the parameter list directly: a constexpr std::vector variable
+    // cannot be formed in constant evaluation here (its allocation would
+    // escape the expression).
+    try {
+        for (auto p : meta::parameters_of(F)) {
+            if (!meta::annotations_of_with_type(p, ^^::fut::from_form).empty() ||
+                !meta::annotations_of_with_type(p, ^^::fut::from_file).empty())
+                return true;
+        }
+    } catch (...) {
+    }
+    return false;
+}
+
 template <meta::info F, std::size_t P>
-decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm) {
+decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm,
+                        const ::fut::form_data* form) {
     constexpr meta::info p = meta::parameters_of(F).data()[P];
     using param_type = [: meta::type_of(p) :];
     using Bare = std::remove_cvref_t<param_type>;
@@ -102,11 +123,28 @@ decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm) 
         for (const auto& [hn, hv] : req.headers)
             if (hn == key) return convert_scalar<Bare>(hv, key);
         throw ::fut::bind_error("missing header: " + std::string(key));
+    }
+    else if constexpr (!meta::annotations_of_with_type(p, ^^fut::from_form).empty()) {
+        constexpr std::string_view key = param_key<F, P, ::fut::from_form>();
+        if (!form)
+            throw ::fut::bind_error("no form body on this request");
+        if (const std::string* value = form->field(key))
+            return convert_scalar<Bare>(*value, key);
+        throw ::fut::bind_error("missing form field: " + std::string(key));
+    }
+    else if constexpr (!meta::annotations_of_with_type(p, ^^fut::from_file).empty()) {
+        constexpr std::string_view key = param_key<F, P, ::fut::from_file>();
+        static_assert(std::is_same_v<Bare, ::fut::uploaded_file>,
+                      "fut: a from_file parameter must be fut::uploaded_file");
+        if (!form)
+            throw ::fut::bind_error("no multipart body on this request");
+        if (const ::fut::uploaded_file* file = form->file(key)) return *file;
+        throw ::fut::bind_error("missing uploaded file: " + std::string(key));
     } else {
         static_assert(!sizeof(Bare),
                       "fut: this route parameter needs a binding annotation "
-                      "(from_body / from_query / from_path / from_header) "
-                      "or must be 'const fut::request&'");
+                      "(from_body / from_query / from_path / from_header / "
+                      "from_form / from_file) or must be 'const fut::request&'");
     }
 }
 
@@ -130,11 +168,17 @@ boost::asio::awaitable<::fut::response> invoke_impl(const ::fut::request& req,
                   "fut: an action must return asio::awaitable<T>");
     using Val = await_value_t<Raw>;
 
+    constexpr bool wants_form = needs_form<F>();
+    std::optional<::fut::form_data> parsed_form{};
+    if constexpr (wants_form) parsed_form = ::fut::parse_form(req);
+    const ::fut::form_data* form = nullptr;
+    if constexpr (wants_form) form = &*parsed_form;
+
     if constexpr (std::is_same_v<Val, ::fut::response>) {
-        co_return co_await ([: F :])(make_arg<F, P>(req, pm)...);
+        co_return co_await ([: F :])(make_arg<F, P>(req, pm, form)...);
     }
     else if constexpr (std::is_same_v<Val, std::string>) {
-        std::string body = co_await ([: F :])(make_arg<F, P>(req, pm)...);
+        std::string body = co_await ([: F :])(make_arg<F, P>(req, pm, form)...);
         ::fut::response r;
         r.status = 200;
         r.content_type = "text/plain; charset=utf-8";
@@ -144,7 +188,7 @@ boost::asio::awaitable<::fut::response> invoke_impl(const ::fut::request& req,
     else if constexpr (requires {
                            glz::write_json(std::declval<Val&>(), std::declval<std::string&>());
                        }) {
-        co_return ::fut::json(co_await ([: F :])(make_arg<F, P>(req, pm)...));
+        co_return ::fut::json(co_await ([: F :])(make_arg<F, P>(req, pm, form)...));
     }
     else {
         static_assert(!sizeof(Val),
@@ -175,12 +219,18 @@ boost::asio::awaitable<::fut::response> invoke_member_impl(
                   "fut: a controller action must return asio::awaitable<T>");
     using Val = await_value_t<Raw>;
 
+    constexpr bool wants_form = needs_form<M>();
+    std::optional<::fut::form_data> parsed_form{};
+    if constexpr (wants_form) parsed_form = ::fut::parse_form(req);
+    const ::fut::form_data* form = nullptr;
+    if constexpr (wants_form) form = &*parsed_form;
+
     auto& self = controller_instance<T>();
     if constexpr (std::is_same_v<Val, ::fut::response>) {
-        co_return co_await (self.[: M :])(make_arg<M, P>(req, pm)...);
+        co_return co_await (self.[: M :])(make_arg<M, P>(req, pm, form)...);
     }
     else if constexpr (std::is_same_v<Val, std::string>) {
-        std::string body = co_await (self.[: M :])(make_arg<M, P>(req, pm)...);
+        std::string body = co_await (self.[: M :])(make_arg<M, P>(req, pm, form)...);
         ::fut::response r;
         r.status = 200;
         r.content_type = "text/plain; charset=utf-8";
@@ -190,7 +240,7 @@ boost::asio::awaitable<::fut::response> invoke_member_impl(
     else if constexpr (requires {
                            glz::write_json(std::declval<Val&>(), std::declval<std::string&>());
                        }) {
-        co_return ::fut::json(co_await (self.[: M :])(make_arg<M, P>(req, pm)...));
+        co_return ::fut::json(co_await (self.[: M :])(make_arg<M, P>(req, pm, form)...));
     }
     else {
         static_assert(!sizeof(Val),

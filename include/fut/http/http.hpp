@@ -9,7 +9,9 @@
 //   fut/annotations.hpp    generic annotation queries (fut::ann::of/first/has)
 //   fut/http/route.hpp     request/response, method enum, path matching
 //   fut/http/router.hpp    the router module interface (add_route)
-//   fut/http/bind.hpp      from_body / from_query / from_path / from_header
+//   fut/http/bind.hpp      from_body / from_query / from_path / from_header /
+//                          from_form / from_file
+//   fut/http/form.hpp      urlencoded + multipart form parsing
 //   fut/http/invoke.hpp    argument binding, controller invoke, return types
 //   fut/http/annotate.hpp  http_action verbs + controller
 //
@@ -22,6 +24,7 @@
 #include <fut/http/route.hpp>
 #include <fut/http/router.hpp>
 #include <fut/http/bind.hpp>
+#include <fut/http/form.hpp>
 #include <fut/http/invoke.hpp>
 #include <fut/http/annotate.hpp>
 //

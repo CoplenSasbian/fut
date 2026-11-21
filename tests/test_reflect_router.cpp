@@ -2,6 +2,7 @@
 #include <doctest/doctest.h>
 
 #include <exception>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -23,6 +24,11 @@ struct greet_out { std::string hi{}; };
 struct mul_out { int result{}; };
 struct raw_out { std::string method{}; std::string target{}; };
 struct who_dto { std::string app{"demo"}; int n{3}; };
+struct upload_out {
+    std::string filename{};
+    std::size_t size{};
+    std::string content_type{};
+};
 
 // ---- composition by stacking: two independent annotations on one class ----
 //
@@ -94,6 +100,19 @@ struct [[=fut::controller{}]] main_controller {
     [[=fut::http_get("/mix/{n}")]]
     asio::awaitable<std::string> mixed([[=fut::from_path("n")]] int n) {
         co_return "n squared is " + std::to_string(n * n);
+    }
+
+    // form fields: urlencoded or multipart, empty key -> parameter name
+    [[=fut::http_post("/form")]]
+    asio::awaitable<greet_out> form([[=fut::from_form{}]] std::string name,
+                                    [[=fut::from_form("n")]] int n) {
+        co_return greet_out{name + "/" + std::to_string(n)};
+    }
+
+    // an uploaded file from a multipart part
+    [[=fut::http_post("/upload")]]
+    asio::awaitable<upload_out> upload([[=fut::from_file{}]] fut::uploaded_file file) {
+        co_return upload_out{file.filename, file.size(), file.content_type};
     }
 
     // A controller nested inside a class: the scan never descends into a
@@ -180,6 +199,24 @@ struct harness {
     }
 };
 
+// A browser-style multipart body for the upload tests.
+std::string multipart_body() {
+    std::string b;
+    const std::string d = "--fut\r\n";
+    b += d;
+    b += "Content-Disposition: form-data; name=\"name\"\r\n\r\n";
+    b += "fut\r\n";
+    b += d;
+    b += "Content-Disposition: form-data; name=\"n\"\r\n\r\n";
+    b += "7\r\n";
+    b += d;
+    b += "Content-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n";
+    b += "Content-Type: text/plain\r\n\r\n";
+    b += "hello upload\r\n";
+    b += "--fut--\r\n";
+    return b;
+}
+
 struct run_state {
     fut::response res{};
     std::exception_ptr err{};
@@ -196,7 +233,8 @@ asio::awaitable<void> invoke_into(run_state& st, fut::http::route_fn fn, fut::re
 
 // Dispatches like the server: find a matching route, run it, map bind errors.
 fut::response drive(sink& s, fut::method m, std::string_view path,
-                    std::string_view body = {}, std::string_view query = {}) {
+                    std::string_view body = {}, std::string_view query = {},
+                    std::span<const std::pair<std::string_view, std::string_view>> headers = {}) {
     for (const auto& r : s.routes) {
         if (r.method != m) continue;
         fut::path_match pm;
@@ -206,7 +244,8 @@ fut::response drive(sink& s, fut::method m, std::string_view path,
         run_state st;
         asio::co_spawn(ioc,
                        invoke_into(st, r.invoke,
-                                   fut::request{fut::to_string(m), path, path, query, body, {}},
+                                   fut::request{fut::to_string(m), path, path, query, body,
+                                                headers},
                                    pm),
                        [](std::exception_ptr) {});
         ioc.run();
@@ -228,7 +267,7 @@ TEST_SUITE("scanned controller registration") {
 
 TEST_CASE("the scan registers every verb-annotated member, prefix composed") {
     harness h{"/api/demo"};
-    REQUIRE(h.s.routes.size() == 13);  // 8 main + 1 grouped + 1 nested + 2 monitored + 1 app-wide
+    REQUIRE(h.s.routes.size() == 15);  // 10 main + 1 grouped + 1 nested + 2 monitored + 1 app-wide
 
     CHECK(h.find(fut::method::GET, "/api/demo/ping") != nullptr);
     CHECK(h.find(fut::method::POST, "/api/demo/add") != nullptr);
@@ -242,6 +281,10 @@ TEST_CASE("the scan registers every verb-annotated member, prefix composed") {
 
     // the entity-agnostic annotation: plain operation(ctx), no template
     CHECK(h.find(fut::method::GET, "/api/demo/health") != nullptr);
+
+    // form bindings
+    CHECK(h.find(fut::method::POST, "/api/demo/form") != nullptr);
+    CHECK(h.find(fut::method::POST, "/api/demo/upload") != nullptr);
 }
 
 TEST_CASE("an entity-agnostic annotation is dispatched too") {
@@ -276,7 +319,7 @@ TEST_CASE("the scan does not recurse into classes") {
     harness h{"/api/demo"};
     // 10 routes: the nested controller inside main_controller was skipped,
     // because only namespaces are recursed into.
-    CHECK(h.s.routes.size() == 13);
+    CHECK(h.s.routes.size() == 15);
     CHECK(h.find(fut::method::GET, "/api/demo/inner/hidden") == nullptr);
     CHECK(drive(h.s, fut::method::GET, "/api/demo/inner/hidden").status == 404);
 }
@@ -362,6 +405,52 @@ TEST_CASE("GET /mix/9 -- string + path binding") {
     const auto res = drive(h.s, fut::method::GET, "/api/demo/mix/9");
     CHECK(res.status == 200);
     CHECK(res.body == "n squared is 81");
+}
+
+TEST_CASE("POST /form -- urlencoded fields") {
+    harness h{"/api/demo"};
+    const std::pair<std::string_view, std::string_view> headers[] = {
+        {"Content-Type", "application/x-www-form-urlencoded"}};
+    const auto res = drive(h.s, fut::method::POST, "/api/demo/form", "name=fut&n=7", {},
+                           headers);
+    CHECK(res.status == 200);
+    const auto v = fut::parse<greet_out>(res.body);
+    REQUIRE(v.has_value());
+    CHECK(v->hi == "fut/7");
+}
+
+TEST_CASE("POST /form -- multipart fields") {
+    harness h{"/api/demo"};
+    const std::string body = multipart_body();
+    const std::pair<std::string_view, std::string_view> headers[] = {
+        {"Content-Type", "multipart/form-data; boundary=fut"}};
+    const auto res = drive(h.s, fut::method::POST, "/api/demo/form", body, {}, headers);
+    CHECK(res.status == 200);
+    const auto v = fut::parse<greet_out>(res.body);
+    REQUIRE(v.has_value());
+    CHECK(v->hi == "fut/7");
+}
+
+TEST_CASE("POST /upload -- the file arrives intact") {
+    harness h{"/api/demo"};
+    const std::string body = multipart_body();
+    const std::pair<std::string_view, std::string_view> headers[] = {
+        {"Content-Type", "multipart/form-data; boundary=fut"}};
+    const auto res = drive(h.s, fut::method::POST, "/api/demo/upload", body, {}, headers);
+    CHECK(res.status == 200);
+    const auto v = fut::parse<upload_out>(res.body);
+    REQUIRE(v.has_value());
+    CHECK(v->filename == "a.txt");
+    CHECK(v->size == std::string_view("hello upload").size());
+    CHECK(v->content_type == "text/plain");
+}
+
+TEST_CASE("form bindings reject a non-form body") {
+    harness h{"/api/demo"};
+    const std::pair<std::string_view, std::string_view> headers[] = {
+        {"Content-Type", "application/json"}};
+    CHECK(drive(h.s, fut::method::POST, "/api/demo/form", R"({"name":"x"})", {}, headers)
+              .status == 400);
 }
 
 TEST_CASE("no match -> 404") {

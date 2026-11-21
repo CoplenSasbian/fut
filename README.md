@@ -19,7 +19,8 @@ reflection-free fallback path.
 * Asio coroutines (`asio::awaitable`) for I/O; HTTP/1.1 messages parsed by **llhttp** and
   serialized by ~40 lines of our own code (no Boost.Beast)
 * Annotation-declared routes: `[[=fut::http_get("/ping")]]` on controller methods
-* Automatic parameter binding: request body DTOs, query/path/header values, raw request escape hatch
+* Automatic parameter binding: JSON body DTOs, query/path/header values, form fields,
+  multipart file uploads, raw request escape hatch
 * Return-type adaptation: `fut::response` passthrough, **plain strings served as text/plain**,
   glaze-serializable DTOs as JSON, anything else is a **compile error**
 * One DLL per app (Django-style); registration through a context, no exported tables
@@ -437,11 +438,49 @@ wraps a `route_fn`. Put that in the router/invoke layer, not in an annotation's 
 | `[[=fut::from_query("k")]]` / `[[=fut::from_query{}]]` | query parameter (empty key -> parameter name) |
 | `[[=fut::from_path("a")]]` / `[[=fut::from_path{}]]` | `{placeholder}` segment of the path pattern |
 | `[[=fut::from_header("X-K")]]` | request header |
+| `[[=fut::from_form{}]]` / `[[=fut::from_form("k")]]` | form field (urlencoded or a multipart text part) |
+| `[[=fut::from_file{}]]` / `[[=fut::from_file("k")]]` | uploaded file (multipart part), type `fut::uploaded_file` |
 | none, type `const fut::request&` | the raw request (escape hatch) |
 | none, anything else | **compile error** (static_assert explains) |
 
 Binding failures (invalid JSON, missing value) become **400** responses; unmatched routes become
 **404**; an unknown HTTP method becomes **405**. Scalars are parsed by glaze.
+
+### Forms and uploads
+
+`application/x-www-form-urlencoded` and `multipart/form-data` are parsed by
+`fut/http/form.hpp` — about 200 lines, header-only, no dependency. The body is parsed **once per
+request**, and only when an action asks for a field of it:
+
+```cpp
+struct upload_out {
+    std::string title{};
+    std::string filename{};
+    std::size_t size{};
+    std::string content_type{};
+};
+
+struct [[=fut::controller{}]] admin_controller {
+    [[=fut::http_post("/upload")]]
+    asio::awaitable<upload_out> upload(
+        [[=fut::from_form{}]] std::string title,          // <- form field "title"
+        [[=fut::from_file{}]] fut::uploaded_file file);   // <- multipart file "file"
+};
+```
+
+```bash
+curl -F "title=quarterly report" -F "file=@notes.txt;type=text/plain" \
+     http://127.0.0.1:8080/api/admin/upload
+# {"title":"quarterly report","filename":"notes.txt","size":28,"content_type":"text/plain"}
+```
+
+* `fut::uploaded_file` carries `name`, `filename`, `content_type` and `data`. Files are held in
+  memory; the server rejects bodies above 32 MB with **413** before they reach an action.
+* A field binds to `std::string` or to any scalar (`int`, `double`, ...) through the same
+  conversion as the other bindings; an empty annotation key falls back to the parameter name.
+* Both encodings are accepted for `from_form`; `from_file` needs multipart (a plain form has no
+  files). A mismatched body is a **400** with a precise message (`missing uploaded file: file`,
+  `form binding needs 'application/x-www-form-urlencoded' or 'multipart/form-data' (got ...)`).
 
 ### Return types
 
@@ -642,7 +681,9 @@ fut/
 │   │   ├── http.hpp        one include for the HTTP stack
 │   │   ├── route.hpp       request/response, method enum, path matching, join_path
 │   │   ├── router.hpp      router_module: the interface a DLL registers through
-│   │   ├── bind.hpp        from_body / from_query / from_path / from_header
+│   │   ├── bind.hpp        from_body / from_query / from_path / from_header /
+│   │   │                    from_form / from_file
+│   │   ├── form.hpp        urlencoded + multipart parsing, uploaded_file
 │   │   ├── invoke.hpp      argument binding, invoke, return adaptation
 │   │   └── annotate.hpp    http_action verbs + controller (the scannable annotation)
 │   ├── log.hpp             asynchronous logging (chains, sinks, reflection-based level names)
@@ -654,7 +695,7 @@ fut/
 │   ├── http_message.*      owned request message + response serialization
 │   └── builder/server/router/app_loader/config/log/main
 ├── apps/admin | apps/web   sample apps (controller style)
-└── tests/                  doctest suite (41 cases)
+└── tests/                  doctest suite (52 cases)
 ```
 
 ## Configuration (config.json)
@@ -672,7 +713,7 @@ fut/
 ## Tests
 
 ```bash
-ctest --preset release   # 41 cases
+ctest --preset release   # 52 cases
 ```
 
 * `test_router` — registration, app bookkeeping, full-path matching, literal-over-placeholder
@@ -687,4 +728,6 @@ ctest --preset release   # 41 cases
   list, and validation errors for unknown formatters, sinks, levels and file settings.
 * `test_http_parser` — the message layer: plain/chunked/bodies, split deliveries, pipelined
   requests, keep-alive rules (HTTP/1.0 vs 1.1, `Connection`), rejects garbage, header lookup.
+* `test_form` — urlencoded and multipart parsing: decoding, quoted boundaries, empty file parts,
+  malformed bodies reported with a reason, Content-Type dispatch.
 * `test_log`, `test_reflect` — logging chains and std::meta utilities.
