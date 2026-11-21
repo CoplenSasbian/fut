@@ -744,7 +744,7 @@ loader_log.info("app '{}' ({} route(s)) <- {}", name, count, path);
   `{f}/{b}/{s}` file/base-file/location, `{u}` function, `{h}` thread; `json_formatter` emits
   one object per line. File paths print relative to the project root (`FUT_PROJECT_ROOT` from CMake).
 * Sinks: colour console, rotating file (size + backup count), or an external `fut::log::sink`.
-* Call `fut::log::shutdown()` before main returns (the builder does); worker threads are never
+* Call `fut::log::shutdown()` before main returns (the server does); worker threads are never
   joined during static destruction.
 * Configure with `"log_level": "debug"` in config.json or `--log-level debug`.
 
