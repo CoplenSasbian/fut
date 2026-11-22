@@ -10,11 +10,13 @@
 // such as the log chains and the router module genuinely shared.
 #if defined(_WIN32)
 #  if defined(FUT_CORE_BUILD)
-#    define FUT_API __attribute__((dllexport))
+#    define FUT_API __declspec(dllexport)
 #  else
-#    define FUT_API __attribute__((dllimport))
+#    define FUT_API __declspec(dllimport)
 #  endif
-#elif defined(__GNUC__)
+#elif defined(__GNUC__) || defined(__clang__)
+// Linux, macOS and every other ELF/Mach-O target: the library is built with
+// -fvisibility=hidden, so the public surface is opt-in.
 #  define FUT_API __attribute__((visibility("default")))
 #else
 #  define FUT_API
@@ -27,10 +29,14 @@ inline constexpr std::uint32_t abi_version = 6;
 
 inline constexpr const char* library_version = "0.3.0";
 
+// What an app library exports to the loader. The same on every platform: an
+// app is loaded with a symbol lookup, never linked against.
 #if defined(_WIN32)
 #  define FUT_EXPORT __declspec(dllexport)
-#else
+#elif defined(__GNUC__) || defined(__clang__)
 #  define FUT_EXPORT __attribute__((visibility("default")))
+#else
+#  define FUT_EXPORT
 #endif
 
 } // namespace fut

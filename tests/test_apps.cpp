@@ -731,3 +731,17 @@ TEST_CASE("load fut_app_demo and drive its routes") {
 }
 
 } // TEST_SUITE
+
+TEST_CASE("a library name is recognised on every platform") {
+    using fut::detail::has_library_suffix;
+
+    // what the loader scans for, on the three platforms fut supports
+    CHECK(has_library_suffix("fut_app_demo.dll"));
+    CHECK(has_library_suffix("fut_app_demo.so"));
+    CHECK(has_library_suffix("fut_app_demo.dylib"));
+    CHECK(has_library_suffix("FUT_APP_DEMO.DLL"));      // case-insensitive
+    CHECK_FALSE(has_library_suffix("libfut_app_demo.so.1"));  // a soname, not an app
+    CHECK_FALSE(has_library_suffix("fut_app_demo.lib"));
+    CHECK_FALSE(has_library_suffix("notes.txt"));
+    CHECK_FALSE(has_library_suffix("so"));
+}

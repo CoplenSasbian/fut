@@ -12,38 +12,10 @@
 #include <fut/export.hpp>
 #include <fut/log.hpp>
 
-#if defined(_WIN32)
-#  include <windows.h>
-#else
-#  include <dlfcn.h>
-#endif
+#include <fut/detail/dylib.hpp>
 
 namespace fut::exec {
 namespace {
-
-void* dll_open(const char* path) {
-#if defined(_WIN32)
-    return reinterpret_cast<void*>(LoadLibraryA(path));
-#else
-    return dlopen(path, RTLD_NOW | RTLD_LOCAL);
-#endif
-}
-
-void* dll_sym(void* h, const char* name) {
-#if defined(_WIN32)
-    return reinterpret_cast<void*>(GetProcAddress(reinterpret_cast<HMODULE>(h), name));
-#else
-    return dlsym(h, name);
-#endif
-}
-
-void dll_close(void* h) {
-#if defined(_WIN32)
-    FreeLibrary(reinterpret_cast<HMODULE>(h));
-#else
-    dlclose(h);
-#endif
-}
 
 using abi_fn = std::uint32_t (*)();
 using text_fn = const char* (*)();
@@ -74,39 +46,38 @@ std::vector<app_loader::entry> app_loader::load_dir(const std::filesystem::path&
     std::vector<std::filesystem::path> files;
     for (const auto& f : std::filesystem::directory_iterator(dir, ec)) {
         if (!f.is_regular_file(ec)) continue;
-        std::string ext = f.path().extension().string();
-        std::ranges::transform(ext, ext.begin(),
-                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (ext == ".dll" || ext == ".so") files.push_back(f.path());
+        // .dll / .so / .dylib, case-insensitively; a name that is not a fut app
+        // is opened and skipped, so the extension is only a prefilter.
+        if (fut::detail::has_library_suffix(f.path().filename().string()))
+            files.push_back(f.path());
     }
     std::ranges::sort(files);
 
     for (const auto& p : files) {
-        void* h = dll_open(p.string().c_str());
-        if (!h) {
-            loader_log.warning("cannot load {}, skipped", p.string());
+        std::string why;
+        fut::detail::shared_library lib = fut::detail::shared_library::open(p, why);
+        if (!lib.valid()) {
+            loader_log.warning("cannot load {}: {}; skipped", p.string(), why);
             continue;
         }
-        auto reg = reinterpret_cast<register_fn>(dll_sym(h, "fut_app_register"));
-        if (!reg) {  // not a fut app DLL
-            dll_close(h);
+        auto reg = reinterpret_cast<register_fn>(lib.symbol("fut_app_register"));
+        if (!reg) {  // not a fut app
             continue;
         }
-        if (auto ver = reinterpret_cast<abi_fn>(dll_sym(h, "fut_abi_version"))) {
+        if (auto ver = reinterpret_cast<abi_fn>(lib.symbol("fut_abi_version"))) {
             const std::uint32_t dll_abi = (*ver)();
             if (dll_abi != fut::abi_version) {
                 loader_log.warning("{} ABI mismatch (dll={}, server={}), skipped", p.string(),
                                    (unsigned)dll_abi, (unsigned)fut::abi_version);
-                dll_close(h);
                 continue;
             }
         }
         const std::string name = [&] {
-            auto f = reinterpret_cast<text_fn>(dll_sym(h, "fut_app_name"));
+            auto f = reinterpret_cast<text_fn>(lib.symbol("fut_app_name"));
             return f ? std::string((*f)()) : p.stem().string();
         }();
         const std::string prefix = [&] {
-            auto f = reinterpret_cast<text_fn>(dll_sym(h, "fut_app_prefix"));
+            auto f = reinterpret_cast<text_fn>(lib.symbol("fut_app_prefix"));
             return f ? std::string((*f)()) : std::string{};
         }();
 
@@ -131,21 +102,18 @@ std::vector<app_loader::entry> app_loader::load_dir(const std::filesystem::path&
 
         if (routes == 0) {
             loader_log.warning("app '{}' registered no routes, skipped", name);
-            dll_close(h);
             continue;
         }
         loader_log.info("app '{}' (prefix '{}', {} route(s)) <- {}", name, prefix,
                         (unsigned)routes, p.string());
-        out.push_back(entry{p, name, prefix, routes, h});
-        handles_.push_back(h);
+        out.push_back(entry{p, name, prefix, routes, lib.handle()});
+        libs_.push_back(std::move(lib));
     }
     return out;
 }
 
 void app_loader::unload_all() {
-    for (void* h : handles_)
-        if (h) dll_close(h);
-    handles_.clear();
+    libs_.clear();   // each shared_library unloads in its destructor
 }
 
 app_loader::~app_loader() { unload_all(); }

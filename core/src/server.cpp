@@ -12,6 +12,10 @@
 #include <thread>
 #include <vector>
 
+#if defined(__APPLE__)
+#  include <mach-o/dyld.h>
+#endif
+
 #include <boost/asio.hpp>
 
 #include <fut/ctx.hpp>
@@ -53,12 +57,25 @@ void app_log_write(void*, fut::log::level severity, std::string_view group,
 const fut::log::service app_log_service{nullptr, &app_log_write};
 
 // Directory of the running executable (for resolving a relative apps_dir).
+// Three platforms, three answers: the Win32 API, /proc/self/exe on Linux, and
+// _NSGetExecutablePath on macOS.
 std::filesystem::path exe_dir() {
 #if defined(_WIN32)
-    char buf[1024] = {};
-    const DWORD n = GetModuleFileNameA(nullptr, buf, sizeof(buf));
-    if (n > 0 && n < sizeof(buf))
-        return std::filesystem::path{std::string(buf, n)}.parent_path();
+    std::wstring buf(32768, L'\0');
+    const DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+    if (n > 0 && n < buf.size()) {
+        buf.resize(n);
+        return std::filesystem::path{buf}.parent_path();
+    }
+#elif defined(__APPLE__)
+    std::uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);        // asks for the length
+    std::string buf(size, '\0');
+    if (_NSGetExecutablePath(buf.data(), &size) == 0) {
+        std::error_code ec;
+        const auto resolved = std::filesystem::canonical(buf.c_str(), ec);
+        return (ec ? std::filesystem::path{buf} : resolved).parent_path();
+    }
 #else
     char buf[4096] = {};
     const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf));

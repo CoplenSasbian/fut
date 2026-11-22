@@ -90,7 +90,7 @@ function(add_app name prefix)
     add_library(${target} MODULE ${ARGN})
 
     set_target_properties(${target} PROPERTIES
-        PREFIX ""
+        PREFIX ""                  # fut_app_demo.so, not libfut_app_demo.so
         OUTPUT_NAME "${target}"
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/apps"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/apps"
@@ -99,6 +99,17 @@ function(add_app name prefix)
     target_include_directories(${target} PRIVATE
         ${PROJECT_SOURCE_DIR}/core/include
         ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # An app is a shared library on top of the same core library the server
+    # links. On ELF/Mach-O targets it must find that library at run time, and
+    # the layout is fixed: bin/fut_server, bin/libfut_core.so, bin/apps/<app>.so
+    # -- so an app looks one directory up from itself.
+    if(NOT WIN32)
+        set_target_properties(${target} PROPERTIES
+            BUILD_RPATH "$ORIGIN/.."
+            INSTALL_RPATH "$ORIGIN/.."
+        )
+    endif()
 
     # An app is a DLL on top of the same core library the server links.
     target_link_libraries(${target} PRIVATE fut::core Boost::asio glaze::glaze)

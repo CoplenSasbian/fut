@@ -7,14 +7,16 @@
 //   fut_abi_version()            ABI check (optional but expected)
 //   fut_app_name() / _prefix()   reporting only (optional)
 //
-// Every DLL in the directory is probed; non-fut DLLs and ABI mismatches are
-// skipped with a warning.
+// Every shared library in the directory is probed -- .dll on Windows, .so on
+// Linux, .dylib on macOS -- and non-fut ones and ABI mismatches are skipped
+// with a warning.
 
 #include <cstddef>
 #include <filesystem>
 #include <string>
 #include <vector>
 
+#include <fut/detail/dylib.hpp>
 #include <fut/exec/module_registry.hpp>
 #include <fut/exec/router.hpp>
 
@@ -60,7 +62,7 @@ public:
     app_loader& operator=(const app_loader&) = delete;
 
 private:
-    std::vector<void*> handles_;
+    std::vector<fut::detail::shared_library> libs_;
 };
 
 } // namespace fut::exec

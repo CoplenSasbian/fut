@@ -1195,13 +1195,34 @@ The same builder runs at start-up and on every reload, so a reload exercises exa
 that brought the server up.
 ## Deploying a business update
 
+The server executable and the core library are not part of a business change. A deployment is
+one shared library per app: **the same step on every platform**, only the suffix differs.
+
+| | Windows | Linux / macOS |
+| --- | --- | --- |
+| artifact | `apps/fut_app_demo.dll` | `apps/fut_app_demo.so` (`.dylib` also accepted) |
+| load | `LoadLibraryW` | `dlopen(RTLD_NOW \| RTLD_LOCAL)` |
+| symbol | `GetProcAddress` | `dlsym` |
+| unload | `FreeLibrary` | `dlclose` |
+| reload trigger | `POST /api/core/reload` | `POST /api/core/reload` or `kill -HUP` |
+
 ```bash
+# build, copy, reload -- no restart, no dropped connection
 cmake --build --preset release --target fut_app_demo
-# copy build/release/bin/fut_app_demo.dll over the deployed one, restart the service
+cp bin/apps/fut_app_demo.so /srv/fut/apps/        # .dll on Windows
+curl -X POST localhost:8080/api/core/reload
 ```
 
-Neither the server executable nor the other app DLLs are rebuilt.
+**Layout on ELF/Mach-O.** `fut_server` and `libfut_core.so` sit in the same directory; apps live in
+`apps/`. Both are given `$ORIGIN` rpaths (`$ORIGIN` for the executable, `$ORIGIN/..` for an app), so
+nothing needs `LD_LIBRARY_PATH`: copy the directory and run it.
 
+**What the loader accepts.** Any file whose name ends in `.dll`, `.so` or `.dylib`
+(case-insensitively) is opened and probed for `fut_app_register`; a library without it is closed
+again silently, and an ABI mismatch is logged and skipped. A library that fails to load logs the
+platform error (`GetLastError` / `dlerror`) and is skipped.
+
+**Names with non-ASCII characters** work on Windows: the loader uses the wide API.
 ## ABI contract
 
 * All modules must be built with the **same compiler and runtime** (the CMake presets guarantee it).
