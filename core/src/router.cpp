@@ -23,16 +23,27 @@ using terminal_fn = handler_fn;
 // Runs chain[index..] around terminal. Each middleware receives a next_fn
 // that resumes the rest of the chain, so a middleware can wrap, replace or
 // short-circuit the response.
+// Where the chain currently is. The next_fn below captures one pointer to it,
+// which fits std::function's small-buffer optimization -- so walking the chain
+// allocates nothing per request (a lambda capturing the three pieces directly
+// would be 24 bytes and hit the heap).
+struct chain_cursor {
+    const std::vector<fut::http::middleware_fn>& chain;
+    const terminal_fn& terminal;
+    std::size_t index;
+};
+
 asio::awaitable<fut::response> run_chain(const std::vector<fut::http::middleware_fn>& chain,
                                          std::size_t index, const terminal_fn& terminal,
                                          const fut::request& req,
                                          const fut::path_match& params) {
     if (index >= chain.size()) co_return co_await terminal(req, params);
 
-    fut::http::next_fn next = [&chain, index, &terminal](
-                                  const fut::request& r,
-                                  const fut::path_match& p) -> asio::awaitable<fut::response> {
-        co_return co_await run_chain(chain, index + 1, terminal, r, p);
+    const chain_cursor cursor{chain, terminal, index};
+    fut::http::next_fn next = [&cursor](const fut::request& r,
+                                        const fut::path_match& p)
+        -> asio::awaitable<fut::response> {
+        co_return co_await run_chain(cursor.chain, cursor.index + 1, cursor.terminal, r, p);
     };
     co_return co_await chain[index](req, params, next);
 }

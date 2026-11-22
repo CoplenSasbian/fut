@@ -27,7 +27,11 @@ struct http_request_message {
     // empty view when absent.
     [[nodiscard]] std::string_view header(std::string_view name) const;
 
+    // Recycles the message for the next request on the same connection: the
+    // vectors and the body keep their capacity, so a keep-alive connection
+    // stops allocating after the first request.
     void clear();
+
 };
 
 // Status line reason, e.g. 200 -> "OK".
@@ -35,8 +39,17 @@ struct http_request_message {
 
 // Status line + headers + body, ready for the socket. The Connection
 // header and Content-Length are always written by this function.
+//
+// The overload that fills `out` keeps its capacity between calls, which is how
+// the connection loop serializes every response into one reused buffer: no
+// allocation per request once it has grown to the largest response.
 [[nodiscard]] std::string serialize_response(
     unsigned status, std::string_view content_type,
+    const std::vector<std::pair<std::string, std::string>>& extra_headers,
+    std::string_view body, bool keep_alive);
+
+void serialize_response(
+    std::string& out, unsigned status, std::string_view content_type,
     const std::vector<std::pair<std::string, std::string>>& extra_headers,
     std::string_view body, bool keep_alive);
 

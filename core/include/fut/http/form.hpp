@@ -5,8 +5,11 @@
 //
 // A form is parsed once per request, and only when an action asks for one of
 // its fields (the binding annotations from_form / from_file). Everything is
-// header-only, and the parsed values own their bytes, so the body view it was
-// given does not have to outlive the call.
+// header-only and **borrowed**: every field and file is a view into the
+// request body, which the server keeps alive for the whole dispatch. Nothing is
+// copied, so a 30 MB upload stays one 30 MB buffer. Carry the values you keep
+// (std::string(field)) into your own structures if they must outlive the
+// request.
 //
 //   struct [[=fut::controller{}]] uploads {
 //       [[=fut::http_post("/upload")]]
@@ -15,6 +18,7 @@
 //   };
 
 #include <cstddef>
+#include <deque>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -26,12 +30,14 @@
 
 namespace fut {
 
-// One uploaded file: a multipart part that carries a filename.
+// One uploaded file: a multipart part that carries a filename. All four views
+// point into the request body (and, for the two header-derived ones, into the
+// request's header strings), so they live exactly as long as the request does.
 struct uploaded_file {
-    std::string name{};          // form field name
-    std::string filename{};      // client-supplied file name
-    std::string content_type{};  // part's Content-Type (empty when absent)
-    std::string data{};          // the bytes
+    std::string_view name{};          // form field name
+    std::string_view filename{};      // client-supplied file name
+    std::string_view content_type{};  // part's Content-Type (empty when absent)
+    std::string_view data{};          // the bytes
 
     [[nodiscard]] bool empty() const { return data.empty(); }
     [[nodiscard]] std::size_t size() const { return data.size(); }
@@ -39,10 +45,13 @@ struct uploaded_file {
 
 // A parsed form: text fields plus uploaded files, in body order.
 struct form_data {
-    std::vector<std::pair<std::string, std::string>> fields{};
+    // Decoded text for urlencoded bodies. A deque because its elements keep
+    // their addresses when the form itself is moved into the caller.
+    std::deque<std::string> owned{};
+    std::vector<std::pair<std::string_view, std::string_view>> fields{};
     std::vector<uploaded_file> files{};
 
-    [[nodiscard]] const std::string* field(std::string_view name) const {
+    [[nodiscard]] const std::string_view* field(std::string_view name) const {
         for (const auto& [key, value] : fields)
             if (key == name) return &value;
         return nullptr;
@@ -117,18 +126,25 @@ inline void parse_disposition(std::string_view value, uploaded_file& part) {
             pos = end;
         }
 
-        if (token == "name") part.name = std::string(parsed);
-        else if (token == "filename") part.filename = std::string(parsed);
+        // Views into the part's header block, which lives in the body.
+        if (token == "name") part.name = parsed;
+        else if (token == "filename") part.filename = parsed;
     }
 }
 
 } // namespace detail
 
 // "a=1&b=hello+world" -- %XX and '+' decoded; the first occurrence wins.
+//
+// urlencoded is the one form that cannot borrow: decoding produces new bytes.
+// They are parked in form.owned, and the field views point there.
 inline void parse_urlencoded(std::string_view body, form_data& out) {
     for (auto& [key, value] : ::fut::parse_query(body)) {
-        if (out.field(key) == nullptr)
-            out.fields.emplace_back(std::move(key), std::move(value));
+        if (out.field(key) != nullptr) continue;
+        out.owned.push_back(std::move(key));
+        std::string& stored_key = out.owned.back();
+        std::string& stored_value = out.owned.emplace_back(std::move(value));
+        out.fields.emplace_back(stored_key, stored_value);
     }
 }
 
@@ -191,16 +207,16 @@ inline bool parse_multipart(std::string_view body, std::string_view content_type
             if (detail::iequals(name, "content-disposition")) {
                 detail::parse_disposition(value, part);
             } else if (detail::iequals(name, "content-type")) {
-                part.content_type = std::string(value);
+                part.content_type = value;
             }
         }
 
         const std::string_view data = body.substr(data_begin, data_end - data_begin);
         if (part.filename.empty()) {
-            out.fields.emplace_back(part.name, std::string(data));
+            out.fields.emplace_back(part.name, data);
         } else {
-            part.data = std::string(data);
-            out.files.push_back(std::move(part));
+            part.data = data;
+            out.files.push_back(part);
         }
         pos = next;
     }

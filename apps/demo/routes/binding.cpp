@@ -26,8 +26,9 @@ asio::awaitable<greeting_out> binding_controller::form(greeting_in in) {
 
 asio::awaitable<upload_out> binding_controller::upload(std::string title,
                                                        fut::uploaded_file file) {
-    co_return upload_out{std::move(title), std::move(file.filename), file.size(),
-                         std::move(file.content_type)};
+    // The views are borrowed; store what must outlive the request as a copy.
+    co_return upload_out{std::move(title), std::string(file.filename), file.size(),
+                         std::string(file.content_type)};
 }
 
 } // namespace demo

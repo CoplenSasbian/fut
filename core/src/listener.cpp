@@ -62,8 +62,9 @@ asio::awaitable<void> write_all(tcp::socket& socket, std::string_view data) {
 
 // Parsed message -> fut::request. The router owns matching, the middleware
 // chains and the error mapping (400/404/405/500).
-asio::awaitable<fut::response> dispatch(router* rt, const http_request_message& msg,
-                                       std::string remote) {
+asio::awaitable<fut::response> dispatch(
+    router* rt, const http_request_message& msg, std::string_view remote,
+    std::vector<std::pair<std::string_view, std::string_view>>& header_views) {
     const std::string_view target = msg.target;
     const auto qpos = target.find('?');
     const std::string_view path =
@@ -71,12 +72,14 @@ asio::awaitable<fut::response> dispatch(router* rt, const http_request_message& 
     const std::string_view query =
         (qpos == std::string_view::npos) ? std::string_view{} : target.substr(qpos + 1);
 
-    std::vector<std::pair<std::string_view, std::string_view>> headers;
-    headers.reserve(msg.headers.size());
-    for (const auto& [name, value] : msg.headers) headers.emplace_back(name, value);
+    // The view list is the session's, reused per request: capacity survives, so
+    // a keep-alive connection does not allocate header storage again.
+    header_views.clear();
+    header_views.reserve(msg.headers.size());
+    for (const auto& [name, value] : msg.headers) header_views.emplace_back(name, value);
 
     co_return co_await rt->dispatch(fut::request{msg.method, target, path, query, msg.body,
-                                                 headers, remote});
+                                                 header_views, remote});
 }
 
 asio::awaitable<void> run_session(tcp::socket socket, router* rt,
@@ -97,6 +100,12 @@ asio::awaitable<void> run_session(tcp::socket socket, router* rt,
     buffer.reserve(read_chunk * 2);
     std::array<char, read_chunk> chunk{};
 
+    // Reused across the requests of this connection: sending, header views.
+    std::string out;
+    out.reserve(1024);
+    std::vector<std::pair<std::string_view, std::string_view>> header_views;
+    header_views.reserve(32);
+
     for (;;) {
         // 1) Parse everything already buffered (pipelined requests too).
         bool keep_going = true;
@@ -110,26 +119,26 @@ asio::awaitable<void> run_session(tcp::socket socket, router* rt,
             case request_parser::status::error:
                 if (const auto err = parser.error(); !err.empty())
                     srv_log.warning("bad request from peer: {}", std::string(err));
-                co_await write_all(socket,
-                                   serialize_response(400, "application/json",
-                                                      {}, R"({"error":"bad request"})", false));
+                serialize_response(out, 400, "application/json", {},
+                                   R"({"error":"bad request"})", false);
+                co_await write_all(socket, out);
                 co_return;
 
             case request_parser::status::complete: {
                 buffer.erase(0, parser.consumed());
                 const http_request_message& msg = parser.message();
                 if (msg.body.size() > max_body) {
-                    co_await write_all(socket,
-                                       serialize_response(413, "application/json", {},
-                                                          R"({"error":"body too large"})", false));
+                    serialize_response(out, 413, "application/json", {},
+                                       R"({"error":"body too large"})", false);
+                    co_await write_all(socket, out);
                     co_return;
                 }
 
                 const bool keep_alive = msg.keep_alive;
-                const fut::response res = co_await dispatch(rt, msg, remote);
-                co_await write_all(socket,
-                                   serialize_response(res.status, res.content_type, res.headers,
-                                                      res.body, keep_alive));
+                const fut::response res = co_await dispatch(rt, msg, remote, header_views);
+                serialize_response(out, res.status, res.content_type, res.headers, res.body,
+                                   keep_alive);
+                co_await write_all(socket, out);
                 if (!keep_alive) co_return;
                 parser.reset();
                 break;

@@ -65,7 +65,14 @@ std::string serialize_response(
     const std::vector<std::pair<std::string, std::string>>& extra_headers,
     std::string_view body, bool keep_alive) {
     std::string out;
-    out.reserve(body.size() + 128 + extra_headers.size() * 32);
+    serialize_response(out, status, content_type, extra_headers, body, keep_alive);
+    return out;
+}
+
+void serialize_response(std::string& out, unsigned status, std::string_view content_type,
+                        const std::vector<std::pair<std::string, std::string>>& extra_headers,
+                        std::string_view body, bool keep_alive) {
+    out.clear();   // capacity is kept on purpose: one buffer per connection
 
     out += "HTTP/1.1 ";
     out += std::to_string(status);
@@ -88,8 +95,7 @@ std::string serialize_response(
         out += "\r\n";
     }
     out += "\r\n";
-    out += body;
-    return out;
+    out.append(body);
 }
 
 } // namespace fut::exec

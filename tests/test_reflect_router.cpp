@@ -140,7 +140,8 @@ struct [[=fut::controller{}]] main_controller {
     // an uploaded file from a multipart part
     [[=fut::http_post("/upload")]]
     asio::awaitable<upload_out> upload([[=fut::from_file{}]] fut::uploaded_file file) {
-        co_return upload_out{file.filename, file.size(), file.content_type};
+        co_return upload_out{std::string(file.filename), file.size(),
+                             std::string(file.content_type)};
     }
 
     // A controller nested inside a class: the scan never descends into a

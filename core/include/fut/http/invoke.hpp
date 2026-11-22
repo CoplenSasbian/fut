@@ -79,8 +79,8 @@ constexpr bool is_field_set_dto_v =
 // Fills an aggregate from name/value pairs: every member present in the set is
 // assigned; members that are absent keep the value they were default-built
 // with. Unknown names are ignored, like extra JSON keys.
-template <class Dto>
-Dto bind_field_set(const std::vector<std::pair<std::string, std::string>>& pairs) {
+template <class Dto, class Pairs>
+Dto bind_field_set(const Pairs& pairs) {
     Dto dto{};
     template for (constexpr meta::info member : std::define_static_array(
                       meta::nonstatic_data_members_of(
@@ -182,7 +182,7 @@ decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm,
             return bind_field_set<Bare>(form->fields);
         } else {
             constexpr std::string_view key = param_key<F, P, ::fut::from_form>();
-            if (const std::string* value = form->field(key))
+            if (const std::string_view* value = form->field(key))
                 return convert_scalar<Bare>(*value, key);
             throw ::fut::bind_error("missing form field: " + std::string(key));
         }

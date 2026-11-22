@@ -54,7 +54,12 @@ socket ──read──▶ std::string buffer ──▶ request_parser (llhttp) 
 ```
 
 The parser is incremental and reports how many bytes a message used, so pipelined requests work
-without copying, and a partial read simply returns `need_more`. Timeouts use an `asio::steady_timer`
+without copying, and a partial read simply returns `need_more`. Per connection, the read buffer, the
+serialized-response buffer, the header-view vector and the parser's message (headers + body) are all
+**reused**: after the first request, a keep-alive connection stops allocating for the request line,
+headers and response envelope. Walking the middleware chain allocates nothing either — the
+`next_fn` captures one pointer, so it stays inside `std::function`'s small-buffer optimization.
+Timeouts use an `asio::steady_timer`
 that closes the socket, and oversized bodies are rejected with 413.
 
 ## Requirements (hard)
@@ -823,8 +828,13 @@ curl -F "title=quarterly report" -F "file=@notes.txt;type=text/plain" \
   Missing members keep the value they were default-built with (`count` stays 0), unknown names are
   ignored like extra JSON keys, and members must be scalars or `std::string`. The same applies to
   `from_query` on a GET: `?a=6&b=7` fills `struct add_in { int a; int b; }`.
-* `fut::uploaded_file` carries `name`, `filename`, `content_type` and `data`. Files are held in
-  memory; the server rejects bodies above 32 MB with **413** before they reach an action.
+* `fut::uploaded_file` carries `name`, `filename`, `content_type` and `data` — **four views into
+  the request body**, not copies. Same for `form_data::fields`: multipart parsing borrows the
+  bytes it was given, so a 30 MB upload stays one 30 MB buffer. The views live as long as the
+  request does; copy (`std::string(field)`) what must outlive it. The one exception is
+  `application/x-www-form-urlencoded`, where percent-decoding produces new bytes: those live in
+  `form_data::owned` (a deque, so the views stay valid when the form is moved to the caller).
+* Bodies above 32 MB are rejected with **413** before they reach an action.
 * A field binds to `std::string` or to any scalar (`int`, `double`, ...) through the same
   conversion as the other bindings; an empty annotation key falls back to the parameter name.
 * Both encodings are accepted for `from_form`; `from_file` needs multipart (a plain form has no
