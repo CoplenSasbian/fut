@@ -1,3 +1,4 @@
+#include <fut/json.hpp>
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
@@ -138,3 +139,51 @@ TEST_CASE("request header lookup ignores case") {
 }
 
 } // TEST_SUITE
+
+TEST_CASE("percent decoding is byte-wise and leaves bad escapes alone") {
+    // UTF-8 percent-encoded: "你" is E4 BD A0
+    const auto pairs = fut::parse_query("name=%E4%BD%A0&plus=a+b&bad=%ZZ&half=%4");
+    REQUIRE(pairs.size() == 4);
+    CHECK(pairs[0].second == "\xE4\xBD\xA0");
+    CHECK(pairs[1].second == "a b");          // '+' is a space in a query
+    CHECK(pairs[2].second == "%ZZ");          // not a valid escape: kept as is
+    CHECK(pairs[3].second == "%4");
+
+    // no charset assumption anywhere: the bytes are what they are
+    CHECK(fut::url_decode("%41%42") == "AB");
+}
+
+TEST_CASE("a multipart filename* is decoded as UTF-8") {
+    std::string body = "--x\r\n";
+    body += "Content-Disposition: form-data; name=\"file\"; filename=\"raw.txt\"; "
+            "filename*=UTF-8''%E4%BD%A0.txt\r\n";
+    body += "Content-Type: text/plain\r\n\r\n";
+    body += "data\r\n--x--\r\n";
+
+    const auto f = fut::parse_form(form_request("multipart/form-data; boundary=x", body));
+    REQUIRE(f.files.size() == 1);
+    CHECK(f.files[0].filename == "\xE4\xBD\xA0.txt");   // 你.txt
+}
+
+TEST_CASE("UTF-8 validation rejects the invalid forms") {
+    CHECK(fut::utf8_valid(""));
+    CHECK(fut::utf8_valid("plain ascii"));
+    CHECK(fut::utf8_valid("\xE4\xBD\xA0"));                  // U+4F60
+    CHECK(fut::utf8_valid("\xF0\x9F\x99\x82"));             // emoji
+    CHECK_FALSE(fut::utf8_valid("\xC0\xAF"));                 // overlong
+    CHECK_FALSE(fut::utf8_valid("\xED\xA0\x80"));            // surrogate
+    CHECK_FALSE(fut::utf8_valid("\xE4\xBD"));                 // truncated
+    CHECK_FALSE(fut::utf8_valid("\xFF"));                      // never valid
+}
+
+TEST_CASE("a JSON body that is not UTF-8 is rejected") {
+    struct name_dto { std::string name; };
+
+    fut::request req{};
+    req.body = "{\"name\":\"\xFF\xFE\"}";
+    CHECK_FALSE(req.json<name_dto>().has_value());
+    req.body = "{\"name\":\"yue\"}";
+    const auto ok = req.json<name_dto>();
+    REQUIRE(ok.has_value());
+    CHECK(ok->name == "yue");
+}

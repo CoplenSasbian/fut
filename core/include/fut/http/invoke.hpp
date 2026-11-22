@@ -151,6 +151,8 @@ decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm,
         return static_cast<const ::fut::path_match&>(pm);
     }
     else if constexpr (!meta::annotations_of_with_type(p, ^^fut::from_body).empty()) {
+        if (!::fut::utf8_valid(req.body))
+            throw ::fut::bind_error("request body is not valid UTF-8");
         Bare v{};
         if (bool(glz::read_json(v, req.body)))
             throw ::fut::bind_error("invalid JSON body");

@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <fut/detail/text.hpp>
 #include <fut/http/route.hpp>
 #include <glaze/glaze.hpp>
 
@@ -20,6 +21,7 @@ response& response::dto(const T& value, unsigned code) {
         body = R"({"error":"serialize failed"})";
         return *this;
     }
+    if (!utf8_valid(payload)) payload = detail::utf8_sanitize(payload);   // JSON is UTF-8
     return set_json(std::move(payload), code);   // code 0 keeps the status
 }
 
@@ -27,6 +29,10 @@ response& response::dto(const T& value, unsigned code) {
 // defined here, so a request can parse itself wherever JSON is available.
 template <class T>
 std::optional<T> request::json() const {
+    // Query values, form fields and paths are opaque bytes; a JSON body is not
+    // (RFC 8259): it must be UTF-8, so an invalid one is rejected here instead
+    // of being handed to the parser.
+    if (!utf8_valid(body)) return std::nullopt;
     T value{};
     if (glz::read_json(value, body)) return std::nullopt;
     return value;

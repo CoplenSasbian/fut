@@ -395,3 +395,28 @@ TEST_CASE("literal segments beat placeholders") {
     CHECK(param->route->pattern == "/users/{id}");
     CHECK(param->params.segment("id") == "42");
 }
+
+TEST_CASE("a header value cannot split the response") {
+    fut::response r;
+    r.set_header("X-Test", "a\r\nX-Evil: 1");
+    CHECK(r.header("x-test") == "aX-Evil: 1");     // CR/LF are gone
+    CHECK(r.header("x-evil").empty());
+
+    r.set_type("text/plain; charset=utf-8\r\nX-Evil: 2");
+    CHECK(r.content_type.find('\n') == std::string::npos);
+
+    r.set_cookie("session", "v\r\nX-Evil: 3");
+    CHECK(r.header("set-cookie").find("\r\n") == std::string::npos);
+}
+
+TEST_CASE("a JSON body built by hand is still JSON") {
+    fut::response r;
+    r.set_json("{\"a\":\"x\r\ny\"}");        // raw CR/LF inside a string
+    CHECK(r.body.find("\r") == std::string::npos);
+    CHECK(r.body.find("\\u000d") != std::string::npos);
+
+    fut::response invalid;
+    invalid.set_json(std::string("{\"a\":\"") + '\xFF' + "\"}");
+    CHECK(fut::utf8_valid(invalid.body));            // U+FFFD instead
+    CHECK(invalid.body.find("\xEF\xBF\xBD") != std::string::npos);
+}

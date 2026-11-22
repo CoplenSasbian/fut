@@ -6,6 +6,16 @@
 #include <string>
 
 namespace fut::exec {
+
+namespace {
+
+// A header that still contains CR/LF (set through a path that bypassed the
+// response setters) must not reach the wire.
+bool has_ctl(std::string_view s) {
+    return s.find_first_of("\r\n") != std::string_view::npos;
+}
+
+} // namespace
 namespace {
 
 bool iequals(std::string_view a, std::string_view b) {
@@ -84,6 +94,7 @@ void serialize_stream_head(std::string& out, unsigned status, std::string_view c
     out += "\r\n";
     out += "Transfer-Encoding: chunked\r\n";
     for (const auto& [name, value] : extra_headers) {
+        if (has_ctl(name) || has_ctl(value)) continue;
         out += name;
         out += ": ";
         out += value;

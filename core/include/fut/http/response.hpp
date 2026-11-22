@@ -33,6 +33,21 @@
 
 namespace fut {
 
+namespace detail {
+
+// Header names and values are bytes on the wire, but CR, LF and NUL would let a
+// value coming from the client (a query argument echoed into a header) split
+// the response. They are removed wherever a header is set.
+inline std::string clean_header(std::string_view s) {
+    std::string out;
+    out.reserve(s.size());
+    for (const char c : s)
+        if (c != '\r' && c != '\n' && c != '\0') out.push_back(c);
+    return out;
+}
+
+} // namespace detail
+
 // Thrown when a response cannot write: not bound to a connection, or the client
 // is gone. Let it propagate; the connection loop stops producing.
 class stream_error : public std::runtime_error {
@@ -94,23 +109,30 @@ public:
     response(unsigned s, std::string ct, std::string b)
         : status(s), content_type(std::move(ct)), body(std::move(b)) {}
 
+    // A JSON or text/* body is UTF-8 by declaration; a field built from raw
+    // client bytes goes through here so we never emit an invalid sequence.
+    static std::string ensure_utf8(std::string payload) {
+        if (!utf8_valid(payload)) return detail::utf8_sanitize(payload);
+        return payload;
+    }
+
     // ---- body helpers (the common cases) ----
     response& set_json(std::string payload, unsigned code = 0) {
         if (code != 0) status = code;
         content_type = "application/json";
-        body = std::move(payload);
+        body = detail::json_safe(ensure_utf8(std::move(payload)));
         return *this;
     }
     response& set_text(std::string payload, unsigned code = 0) {
         if (code != 0) status = code;
         content_type = "text/plain; charset=utf-8";
-        body = std::move(payload);
+        body = ensure_utf8(std::move(payload));
         return *this;
     }
     response& set_html(std::string payload, unsigned code = 0) {
         if (code != 0) status = code;
         content_type = "text/html; charset=utf-8";
-        body = std::move(payload);
+        body = ensure_utf8(std::move(payload));
         return *this;
     }
     // Serializes a DTO into the body (defined in <fut/json.hpp>: this header
@@ -146,10 +168,13 @@ public:
         return *this;
     }
     response& set_type(std::string type) {
+        type = detail::clean_header(type);
         content_type = std::move(type);
         return *this;
     }
     response& set_header(std::string name, std::string value) {
+        name = detail::clean_header(name);
+        value = detail::clean_header(value);
         for (auto& [key, existing] : headers)
             if (iequals(key, name)) {
                 existing = std::move(value);
@@ -159,12 +184,12 @@ public:
         return *this;
     }
     response& add_header(std::string name, std::string value) {
-        headers.emplace_back(std::move(name), std::move(value));
+        headers.emplace_back(detail::clean_header(name), detail::clean_header(value));
         return *this;
     }
     response& set_cookie(std::string name, std::string value,
                          std::string_view attributes = "Path=/; HttpOnly") {
-        std::string cookie = std::move(name) + "=" + std::move(value);
+        std::string cookie = detail::clean_header(name) + "=" + detail::clean_header(value);
         if (!attributes.empty()) {
             cookie.append("; ");
             cookie.append(attributes);

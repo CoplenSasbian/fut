@@ -715,6 +715,46 @@ per session, one bound response reused per request), `core/src/http_message.cpp`
 (`serialize_stream_head` / `append_chunk` / `append_last_chunk` / `serialize_response`), and
 `core/include/fut/http/response.hpp` is the object itself.
 
+## Bytes and encodings
+
+The rule everywhere: **paths, query values, form fields and header values are opaque bytes**; a
+**JSON body is UTF-8** (RFC 8259). Nothing is transcoded behind your back, and nothing invalid is
+emitted.
+
+| Where | Behaviour |
+| --- | --- |
+| request target | matched byte-wise against the route patterns; a **raw** non-ASCII path matches nothing (clients percent-encode), `%XX` is *not* decoded before matching |
+| path parameters | `params.segment("id")` is the raw segment; `fut::url_decode` when you need the bytes |
+| query values, `from_query` | `%XX` decoded and `+` → space; a malformed escape (`%ZZ`, `%4`) is kept literally |
+| form fields | `application/x-www-form-urlencoded`: same decoding; `multipart/form-data`: bytes as sent |
+| uploaded filenames | `filename="x"` as sent, `filename*=` (RFC 5987/6266) percent-decoded as UTF-8 and preferred |
+| JSON body | must be valid UTF-8, otherwise **400** `request body is not valid UTF-8`; then glaze parses it |
+| header values in | passed through (obs-text allowed); compared case-insensitively on the name |
+| header values out | CR, LF and NUL are stripped in `set_header`/`add_header`/`set_type`/`set_cookie`, and the serializer skips anything that still has them — a query value echoed into a header cannot split the response |
+| JSON bodies out | always valid UTF-8 (`dto()`, `set_json`) and always valid JSON: raw control bytes inside a string become `\u000d`; invalid UTF-8 becomes U+FFFD |
+| `text/*` bodies out | `charset=utf-8`, invalid bytes replaced with U+FFFD |
+
+```cpp
+// what the client sent is what you get: bytes, not an assumed charset
+const std::string_view raw = params.segment("id");   // %E4%BD%A0 stays literal here
+const std::string name = req.param_or("name", "");    // decoded: maybe UTF-8, maybe not
+
+out.dto(greeting{"你好"});      // JSON is written as UTF-8, always
+out.set_text("bytes: " + name); // text/plain; charset=utf-8
+```
+
+Two invalid inputs are rejected rather than guessed at: a JSON body that is not UTF-8 (**400**) and
+the framing that llhttp refuses (bad chunk size, header line without a colon, body over the
+configured limit → **413**). Everything else is lenient: the server never assumes a charset and
+never rewrites a value.
+
+```bash
+curl -s -G --data-urlencode 'name=你好' localhost:8080/api/demo/query   # decoded, echoed as UTF-8
+curl -s -H $'User-Agent: a\xffb' localhost:8080/api/demo/raw/echo        # 0xFF -> U+FFFD in JSON
+printf '{"message":"\xff"}' | curl -H 'Content-Type: application/json' --data-binary @- \
+     localhost:8080/api/demo/body                                      # 400 not-valid-UTF-8
+```
+
 ## Errors
 
 An action is a coroutine, so **throwing is the way out**. The router is the single place that turns

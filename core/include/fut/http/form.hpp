@@ -102,8 +102,11 @@ inline std::string_view content_type_param(std::string_view content_type,
     return {};
 }
 
-// name="a"; filename="b" from a Content-Disposition value.
-inline void parse_disposition(std::string_view value, uploaded_file& part) {
+// name="a"; filename="b"; filename*=UTF-8''%E4%BD%A0.txt from a
+// Content-Disposition value. The starred form (RFC 5987) is percent-encoded
+// UTF-8 and wins when both are present, as RFC 6266 asks.
+inline void parse_disposition(std::string_view value, uploaded_file& part,
+                              std::deque<std::string>& owned) {
     std::size_t pos = 0;
     while ((pos = value.find('=', pos)) != std::string_view::npos) {
         std::size_t begin = pos;
@@ -126,9 +129,17 @@ inline void parse_disposition(std::string_view value, uploaded_file& part) {
             pos = end;
         }
 
-        // Views into the part's header block, which lives in the body.
+        // Views into the part's header block, which lives in the body -- the
+        // starred form is decoded, so its bytes live in form_data::owned.
         if (token == "name") part.name = parsed;
         else if (token == "filename") part.filename = parsed;
+        else if (token == "filename*") {
+            std::string_view ext = parsed;                 // UTF-8''%E4%BD%A0.txt
+            if (const auto quote = ext.find("''"); quote != std::string_view::npos)
+                ext = ext.substr(quote + 2);
+            owned.push_back(url_decode(ext));
+            part.filename = owned.back();                  // deque: the view stays valid
+        }
     }
 }
 
@@ -205,7 +216,7 @@ inline bool parse_multipart(std::string_view body, std::string_view content_type
             const std::string_view value = detail::trim(line.substr(colon + 1));
 
             if (detail::iequals(name, "content-disposition")) {
-                detail::parse_disposition(value, part);
+                detail::parse_disposition(value, part, out.owned);
             } else if (detail::iequals(name, "content-type")) {
                 part.content_type = value;
             }
