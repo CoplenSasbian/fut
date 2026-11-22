@@ -28,12 +28,20 @@ struct [[=fut::controller{}]] service_controller {
         co_return io_out{true, true};
     }
 
-    // The injected log group writes into the server's chains as "demo.log".
+    // The injected log groups write into the server's chains: one named after
+    // the variable ("demo.log"), one named by the annotation ("demo.audit").
     [[=fut::http_get("/log")]]
     asio::awaitable<log_out> write_log() {
         log.info("demo /log was called");
         log.warning("and this one is a warning");
+        audit_log.info("audited by the explicitly named group");
         co_return log_out{true, std::string(log.name())};
+    }
+
+    // The explicit name is visible on the object itself.
+    [[=fut::http_get("/audit-group")]]
+    asio::awaitable<log_out> audit_group() {
+        co_return log_out{audit_log.sink() != nullptr, std::string(audit_log.name())};
     }
 
     // a chosen status: fut::http_error keeps it

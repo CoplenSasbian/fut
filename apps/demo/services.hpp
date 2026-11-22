@@ -17,7 +17,10 @@ namespace demo {
 // The server's io_context: post work or start a timer on its loop.
 [[=fut::inject{}]] boost::asio::io_context* g_io = nullptr;
 
-// Name is the app name plus this identifier: "demo.log".
+// No name given: the group becomes the app name plus this identifier, "demo.log".
 [[=fut::log_group{}]] fut::log::group_ref log;
+
+// A name given: the group is exactly that, no derivation.
+[[=fut::log_group{"demo.audit"}]] fut::log::group_ref audit_log;
 
 } // namespace demo

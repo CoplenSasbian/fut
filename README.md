@@ -590,8 +590,24 @@ asio::awaitable<io_dto> io() {
 
 `fut::inject` (`fut/inject.hpp`) fills a namespace-scope **pointer** from the context; the pointee
 type is the lookup key. Pointers only: a reference has to be bound at its declaration, which is a
-moment the scanner does not control. A missing or ambiguous module makes registration fail loudly
-instead of leaving a null behind.
+moment the scanner does not control.
+
+**Picking among modules of one type** — the annotation may carry a name, and the variable's own
+name is the fallback:
+
+```cpp
+[[=fut::inject{}]] boost::asio::io_context* g_io = nullptr;   // one of its type: nothing needed
+
+[[=fut::inject{"primary"}]] store* a = nullptr;               // the given name
+[[=fut::inject{}]] store* archive = nullptr;                  // falls back to "archive"
+```
+
+The order is: type alone (unique → done) → the annotation's name → the variable's identifier. If
+several modules share the type and neither name matches, registration fails with
+`fut::module_error` rather than picking one. Missing modules are left as null.
+
+The companion rule for logs: `fut::log_group{"name"}` uses that name verbatim, and only a bare
+`fut::log_group{}` derives `app.variable`.
 
 ### Logging from an app
 
@@ -600,7 +616,8 @@ An app DLL cannot call `fut::log::submit` — that is the executable's log core 
 
 ```cpp
 namespace demo {
-[[=fut::log_group{}]] fut::log::group_ref log;   // group "demo.log"
+[[=fut::log_group{}]] fut::log::group_ref log;                    // "demo.log"
+[[=fut::log_group{"demo.audit"}]] fut::log::group_ref audit;      // "demo.audit" -- used as given
 }
 
 [[=fut::http_get("/log")]]
@@ -616,8 +633,8 @@ curl -s http://127.0.0.1:8080/api/demo/log
 # console: 2026-11-22 16:06:40 [INFO    ] demo.log     demo /log was called
 ```
 
-The name is the **app name plus the variable's identifier**, so two apps can both have a `log`
-without colliding. The sink is the server's log service, so app lines share the chains, level
+A name given to the annotation wins; with none, the name is the **app name plus the variable's
+identifier**, so two apps can both have a `log` without colliding. The sink is the server's log service, so app lines share the chains, level
 filter and formatters with the server's own — no second logging system in the DLL. `group_ref` is
 header-only and only calls the service pointer; with no service published every call is a no-op,
 which is what a unit test wants.
@@ -922,7 +939,7 @@ fut/
 │   ├── http_message.*      owned request message + response serialization
 │   └── builder/server/router/app_loader/config/log/main
 ├── apps/demo/             the reference app: one DLL, every feature, split into modules
-└── tests/                  doctest suite (64 cases)
+└── tests/                  doctest suite (65 cases)
 ```
 
 ## Configuration (config.json)
@@ -940,7 +957,7 @@ fut/
 ## Tests
 
 ```bash
-ctest --preset release   # 64 cases
+ctest --preset release   # 65 cases
 ```
 
 * `test_router` — registration, app bookkeeping, full-path matching, literal-over-placeholder

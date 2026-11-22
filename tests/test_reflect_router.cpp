@@ -63,11 +63,21 @@ struct health : fut::scannable {
 
 namespace demo_actions {
 
+struct store {
+    int id{};
+};
+
 // injected while the namespace is scanned: the pointee type is the key
 [[=fut::inject{}]] boost::asio::io_context* g_io = nullptr;
 
+// two modules of one type: the name decides, and with no name the variable's
+// own identifier is tried before giving up
+[[=fut::inject{"primary"}]] store* primary_store = nullptr;
+[[=fut::inject{}]] store* archive = nullptr;
+
 // a group bound to whatever service the context publishes
 [[=fut::log_group{}]] fut::log::group_ref app_log;
+[[=fut::log_group{"special"}]] fut::log::group_ref named_log;
 
 struct [[=fut::controller{}]] main_controller {
     [[=fut::http_get("/ping")]]
@@ -198,6 +208,8 @@ struct harness {
     fut::fut_ctx ctx{};
     asio::io_context ioc{};   // what the "io" module points at
     fut::log::service log_service{};   // the "log" module
+    demo_actions::store primary_store{1};
+    demo_actions::store archive_store{2};
 
     explicit harness(std::string_view prefix) : prefix_storage(prefix) {
         ctx.host = this;
@@ -209,11 +221,19 @@ struct harness {
             const bool router_type = type == typeid(fut::http::router_module).name();
             const bool io_type = type == typeid(asio::io_context).name();
             const bool log_type = type == typeid(fut::log::service).name();
-            if (!type.empty() && !router_type && !io_type && !log_type)
+            const bool store_type = type == typeid(demo_actions::store).name();
+            if (!type.empty() && !router_type && !io_type && !log_type && !store_type)
                 return {nullptr, fut::module_status::wrong_type};
 
             if (log_type || name == "log")
                 return {&self->log_service, fut::module_status::found};
+
+            if (store_type) {
+                if (name.empty()) return {nullptr, fut::module_status::ambiguous};
+                if (name == "primary") return {&self->primary_store, fut::module_status::found};
+                if (name == "archive") return {&self->archive_store, fut::module_status::found};
+                return {nullptr, fut::module_status::not_found};
+            }
 
             if (io_type || name == "io")
                 return {&self->ioc, fut::module_status::found};
@@ -361,6 +381,22 @@ TEST_CASE("fut::log_group builds an app-scoped group_ref") {
     harness h{"/api/demo"};
     CHECK(demo_actions::app_log.name() == "demo.app_log");   // app name + identifier
     CHECK(demo_actions::app_log.sink() == &h.log_service);   // wired to the service
+
+    // an explicit name wins over the derived one
+    CHECK(demo_actions::named_log.name() == "special");
+    CHECK(demo_actions::named_log.sink() == &h.log_service);
+}
+
+TEST_CASE("fut::inject picks among modules of one type by name") {
+    harness h{"/api/demo"};
+
+    // the annotation's name
+    REQUIRE(demo_actions::primary_store != nullptr);
+    CHECK(demo_actions::primary_store->id == 1);
+
+    // no name given: the variable's own identifier ("archive")
+    REQUIRE(demo_actions::archive != nullptr);
+    CHECK(demo_actions::archive->id == 2);
 }
 
 TEST_CASE("the scan does not recurse into classes") {

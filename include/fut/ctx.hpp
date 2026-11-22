@@ -73,10 +73,18 @@ struct fut_ctx {
     std::string_view app_name{};
     std::string_view app_prefix{};
 
+    // The raw lookup: name and/or type, plus the status. Callers that can
+    // recover from "ambiguous" (fut::inject falls back to the variable's name)
+    // use this instead of the throwing accessor below.
+    [[nodiscard]] module_lookup find_module(std::string_view name,
+                                            std::string_view type) const {
+        if (!get_module_fn) return {nullptr, module_status::not_found};
+        return get_module_fn(const_cast<fut_ctx*>(this), name, type);
+    }
+
     // Untyped lookup by name; nullptr when there is no such module.
     [[nodiscard]] void* get_module(std::string_view name) const {
-        if (!get_module_fn) return nullptr;
-        return get_module_fn(const_cast<fut_ctx*>(this), name, {}).module;
+        return find_module(name, {}).module;
     }
 
     // Typed lookup. With a name the module must also have that type; without
@@ -84,9 +92,7 @@ struct fut_ctx {
     // otherwise; returns nullptr when nothing is registered under it.
     template <class T>
     [[nodiscard]] T* get_module(std::string_view name = {}) const {
-        if (!get_module_fn) return nullptr;
-
-        const auto result = get_module_fn(const_cast<fut_ctx*>(this), name, typeid(T).name());
+        const auto result = find_module(name, typeid(T).name());
         switch (result.status) {
         case module_status::found:
             return static_cast<T*>(result.module);

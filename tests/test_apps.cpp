@@ -135,7 +135,7 @@ TEST_CASE("load fut_app_demo and drive its routes") {
     const auto* demo_app = find_app(apps, "demo");
     REQUIRE(demo_app != nullptr);
     CHECK(demo_app->prefix == "/api/demo");
-    CHECK(demo_app->routes == 21);   // 16 main + 4 items + 1 nested
+    CHECK(demo_app->routes == 22);   // 17 main + 4 items + 1 nested
 
     SUBCASE("GET /ping -- a DTO becomes JSON") {
         struct pong {
@@ -168,7 +168,7 @@ TEST_CASE("load fut_app_demo and drive its routes") {
         CHECK(v->name == "demo");
         CHECK(v->prefix == "/api/demo");
         CHECK(v->abi == fut::abi_version);
-        CHECK(v->routes.size() == 21);
+        CHECK(v->routes.size() == 22);
         bool found_put = false;
         for (const auto& r : v->routes)
             if (r.method == "PUT" && r.path == "/api/demo/items/{id}") found_put = true;
@@ -404,6 +404,21 @@ TEST_CASE("load fut_app_demo and drive its routes") {
         REQUIRE(!captured().empty());
         CHECK(contains(captured(), "demo.log", "demo /log was called"));
         CHECK(contains(captured(), "demo.log", "and this one is a warning"));
+        // the explicitly named group is a separate one
+        CHECK(contains(captured(), "demo.audit", "audited by the explicitly named group"));
+    }
+
+    SUBCASE("GET /audit-group -- an explicit name is used verbatim") {
+        struct log_out {
+            bool logged{};
+            std::string group{};
+        };
+        const auto res = run(ioc, rt, fut::method::GET, "/api/demo/audit-group");
+        CHECK(res.status == 200);
+        const auto v = fut::parse<log_out>(res.body);
+        REQUIRE(v.has_value());
+        CHECK(v->logged);
+        CHECK(v->group == "demo.audit");
     }
 
     SUBCASE("GET /fail/418 -- the action chooses the status") {

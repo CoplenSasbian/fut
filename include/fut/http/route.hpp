@@ -8,6 +8,8 @@
 // (see fut/ctx.hpp and fut/http/router.hpp).
 
 #include <array>
+#include <fut/detail/text.hpp>
+
 #include <cstddef>
 #include <cctype>
 #include <cstdint>
@@ -58,21 +60,6 @@ inline std::optional<method> method_from_string(std::string_view s) {
 
 namespace detail {
 
-template <std::size_t Max>
-struct text_buf {
-    char chars[Max]{};
-
-    constexpr text_buf() = default;
-    constexpr text_buf(std::string_view s) {
-        for (std::size_t i = 0; i < s.size() && i + 1 < Max; ++i) chars[i] = s[i];
-    }
-    constexpr std::size_t size() const {
-        std::size_t n = 0;
-        while (n < Max && chars[n]) ++n;
-        return n;
-    }
-    constexpr std::string_view view() const { return {chars, size()}; }
-};
 
 } // namespace fut::detail
 
