@@ -641,49 +641,47 @@ Two implementation notes:
   not as a `std::function`: a callable constructed inside a DLL would otherwise be destroyed after
   the DLL is unloaded. The executable wraps the pointer in its own `std::function`.
 
-## Streaming and SSE
+## The response writes, and streaming is the same object
 
-A normal action returns a response and the server sends it whole. Streaming flips that: the action
-receives a `fut::stream&`, sends the head itself and then writes body pieces while the client is
-already reading.
+`fut::response` is what to send **and** the writing of it. Two modes, one type:
+
+* **unbound** — a plain value. An action fills `status`, headers, media type and body and returns
+  it; the connection's response takes it over (`absorb`) and writes it.
+* **bound** — created by the connection at the start of the request. The same object can write
+  itself: `begin()` sends the head, `write()` a body chunk, `end()` finishes. That is streaming,
+  with no second abstraction: no separate stream type, no parallel header handling.
 
 ```cpp
-[[=fut::http_get("/events")]]
-asio::awaitable<void> events(fut::stream& out) {
-    fut::response head;
-    head.content_type = "text/event-stream";
-    head.headers.emplace_back("Cache-Control", "no-cache");
-    co_await out.begin(std::move(head));      // status + headers, body is chunked from here
+[[=fut::http_post("/items")]]                       // ordinary: return a value
+asio::awaitable<item> create([[=fut::from_body{}]] item in);
 
-    for (int i = 0; i < 5; ++i) {
-        co_await out.send("tick", std::to_string(i));   // event: / data: framing
-        co_await out.sleep(std::chrono::milliseconds{20});
-    }
+[[=fut::http_get("/events")]]                       // streaming: write through the response
+asio::awaitable<void> events(fut::response& out) {   // the connection's own response
+    out.set_type("text/event-stream").set_header("Cache-Control", "no-cache");
+    co_await out.begin();                            // head goes out here
+    for (int i = 0; i < 5; ++i) co_await out.sse("tick", std::to_string(i));
 }
 ```
 
-| Call | What it does |
+| On a bound response | Does |
 | --- | --- |
-| `begin(head)` | status line + headers once; `Transfer-Encoding: chunked` |
-| `write(bytes)` | one body chunk, awaits the socket |
-| `line(text)` | a chunk ending in a newline |
-| `send(event, data)` | one SSE frame (`event:`/`data:`, multi-line data split) |
-| `comment(text)` | an SSE comment, the standard keep-alive on a quiet stream |
-| `sleep(ms)` | waits on the server's io_context |
-| `finish()` | the terminating chunk (the connection loop does it when the action returns) |
-| `started()` / `closed()` | whether the head went out / the client is gone |
+| `begin()` | status line + headers once; `Transfer-Encoding: chunked` from here |
+| `write(bytes)` / `write_line(text)` | one body chunk (calls `begin()` first) |
+| `sse(event, data)` / `sse_comment(text)` | one SSE frame / a keep-alive comment |
+| `end()` | the last chunk when streaming, or head + body when the action never wrote |
+| `started()` / `finished()` / `bound()` | state |
+| `reset()` / `absorb(other)` | what the connection does per request |
 
-**Transport.** HTTP/1.1 chunked, so no `Content-Length` is needed and the connection stays
-keep-alive afterwards. `curl --raw` shows the framing: `8\r\nchunk-1\n\r\n…0\r\n\r\n`.
+Before the first write nothing is on the wire, so `set_status`, `set_header` and `set_type` still
+apply; afterwards they are fixed. `set_cookie`, `erase_header`, `header(name)`, `ok()` and the
+factories (`json`, `text`, `html`, `no_content`, `redirect`) are shared by both modes.
 
 **Backpressure** is the `co_await`: a slow client slows the producer down instead of growing a
-buffer. **Disconnects** surface as `fut::stream_error` from the next write — let it propagate and
-the connection loop stops the action; the router maps it to 499 internally.
+buffer. **Disconnects** surface as `fut::stream_error` from the next write; let it propagate and the
+connection stops the action (the router maps it to 499 internally).
 
-**Not streaming? Nothing changes.** An action may take `fut::stream&` and still return a normal
-response: if it never calls `begin()`, the server sends the returned response as usual. The
-stream travels on the request (`request::body_stream`), so `route_fn` and every existing action
-signature are unchanged.
+**Not streaming? Nothing changes**: an action that takes `fut::response&` and never writes is
+ignored — the returned value is written as usual. So an action can decide per request.
 
 ```bash
 curl -D- -o /dev/null http://127.0.0.1:8080/api/demo/events
@@ -692,13 +690,14 @@ curl -D- -o /dev/null http://127.0.0.1:8080/api/demo/events
 # Transfer-Encoding: chunked
 # Cache-Control: no-cache
 
-curl http://127.0.0.1:8080/api/demo/events
-# event: tick
-# data: 0
-# ... five ticks, 20 ms apart
+curl --raw http://127.0.0.1:8080/api/demo/stream
+# 8\r\nchunk-0\n\r\n 8\r\nchunk-1\n\r\n 8\r\nchunk-2\n\r\n 0\r\n\r\n
 ```
 
-`apps/demo/routes/stream.*` is exactly this: `/events` (SSE) and `/stream` (plain chunks).
+Where the writing lives: `core/src/listener.cpp` owns the connection's `response_writer` (one per
+session, one bound response reused per request), `core/src/http_message.cpp` has the framing
+(`serialize_stream_head` / `append_chunk` / `append_last_chunk` / `serialize_response`), and
+`core/include/fut/http/response.hpp` is the object itself.
 
 ## Errors
 

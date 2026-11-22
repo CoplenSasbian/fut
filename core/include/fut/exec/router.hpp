@@ -27,7 +27,6 @@
 #include <boost/asio/awaitable.hpp>
 
 #include <fut/http/router.hpp>
-#include <fut/http/stream.hpp>
 
 #include <fut/export.hpp>
 
@@ -80,10 +79,6 @@ public:
     // handler, with the error mapping described in fut/http/error.hpp.
     boost::asio::awaitable<fut::response> dispatch(const fut::request& req) const;
 
-    // Same pipeline, with a stream the actions may write to. The returned
-    // response is ignored when the stream was started.
-    boost::asio::awaitable<fut::response> dispatch(const fut::request& req,
-                                                   fut::stream& out) const;
 
     // Replaces the body written for every error status. The default is
     // fut::error(), i.e. {"error":"<message>"}. Install it from the

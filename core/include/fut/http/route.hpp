@@ -22,6 +22,7 @@
 #include <vector>
 
 #include <fut/export.hpp>
+#include <fut/http/response.hpp>
 #include <fut/url.hpp>
 
 namespace fut {
@@ -88,9 +89,10 @@ struct request {
     // aggregate order.
     std::string_view remote{};
 
-    // Set by the server when the action may stream its body (see fut::stream).
-    // Null on a plain dispatch, where a streaming action is an error.
-    stream* body_stream = nullptr;
+    // The connection's own response for this request: an action that takes
+    // fut::response& writes straight into it (streaming). Null on a plain
+    // dispatch, where a streaming action is an error.
+    response* body_response = nullptr;
 
     // ---- headers (case-insensitive, as HTTP is) ----
     [[nodiscard]] std::string_view header(std::string_view name) const {
@@ -187,91 +189,6 @@ struct owned_request {
 
 private:
     std::vector<std::pair<std::string_view, std::string_view>> header_views{};
-};
-
-// What an action returns. A plain DTO would be serialized for you; returning a
-// response means you choose the status, the media type and the headers.
-struct response {
-    unsigned status = 200;
-    std::string content_type = "application/json";
-    std::string body{};
-    std::vector<std::pair<std::string, std::string>> headers{};
-
-    response() = default;
-    response(unsigned s, std::string ct, std::string b)
-        : status(s), content_type(std::move(ct)), body(std::move(b)) {}
-
-    // ---- factories ----
-    static response json(std::string payload, unsigned code = 200) {
-        return response{code, "application/json", std::move(payload)};
-    }
-    static response text(std::string payload, unsigned code = 200) {
-        return response{code, "text/plain; charset=utf-8", std::move(payload)};
-    }
-    static response html(std::string payload, unsigned code = 200) {
-        return response{code, "text/html; charset=utf-8", std::move(payload)};
-    }
-    static response no_content() { return response{204, {}, {}}; }
-    static response redirect(std::string location, unsigned code = 302) {
-        response r{code, "text/plain; charset=utf-8", "redirecting to " + location};
-        r.headers.emplace_back("Location", std::move(location));
-        return r;
-    }
-
-    // ---- fluent editing ----
-    response& set_status(unsigned code) noexcept {
-        status = code;
-        return *this;
-    }
-    response& set_body(std::string payload) {
-        body = std::move(payload);
-        return *this;
-    }
-    response& set_type(std::string type) {
-        content_type = std::move(type);
-        return *this;
-    }
-    // Replaces an existing header with the same (case-insensitive) name.
-    response& set_header(std::string name, std::string value) {
-        for (auto& [key, existing] : headers)
-            if (detail::iequals(key, name)) {
-                existing = std::move(value);
-                return *this;
-            }
-        headers.emplace_back(std::move(name), std::move(value));
-        return *this;
-    }
-    response& add_header(std::string name, std::string value) {
-        headers.emplace_back(std::move(name), std::move(value));
-        return *this;
-    }
-    response& set_cookie(std::string name, std::string value,
-                         std::string_view attributes = "Path=/; HttpOnly") {
-        std::string cookie = std::move(name) + "=" + std::move(value);
-        if (!attributes.empty()) {
-            cookie.append("; ");
-            cookie.append(attributes);
-        }
-        return add_header("Set-Cookie", std::move(cookie));
-    }
-    response& erase_header(std::string_view name) {
-        for (auto it = headers.begin(); it != headers.end(); ++it)
-            if (detail::iequals(it->first, name)) {
-                headers.erase(it);
-                break;
-            }
-        return *this;
-    }
-
-    [[nodiscard]] std::string_view header(std::string_view name) const {
-        for (const auto& [key, value] : headers)
-            if (detail::iequals(key, name)) return value;
-        return {};
-    }
-    [[nodiscard]] bool has_header(std::string_view name) const {
-        return !header(name).empty();
-    }
-    [[nodiscard]] bool ok() const noexcept { return status >= 200 && status < 300; }
 };
 
 // ---------------------------------------------------------------------------

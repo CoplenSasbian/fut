@@ -202,14 +202,6 @@ asio::awaitable<fut::response> router::dispatch_with(const fut::request& req) co
     }
 }
 
-asio::awaitable<fut::response> router::dispatch(const fut::request& req,
-                                               fut::stream& out) const {
-    // A copy: the stream pointer is per call, the rest is borrowed anyway.
-    fut::request with_stream = req;
-    with_stream.body_stream = &out;
-    co_return co_await dispatch_with(with_stream);
-}
-
 asio::awaitable<fut::response> router::dispatch(const fut::request& req) const {
     co_return co_await dispatch_with(req);
 }

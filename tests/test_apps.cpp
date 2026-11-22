@@ -505,11 +505,11 @@ TEST_CASE("load fut_app_demo and drive its routes") {
         CHECK(res.body.find("created") != std::string::npos);
     }
 
-    SUBCASE("streaming: SSE frames arrive one chunk at a time") {
+    SUBCASE("streaming: the response writes chunks as SSE frames") {
         std::string head_type, body, finished;
-        fut::stream s{
-            [&](unsigned, std::string_view ct, const auto&) -> asio::awaitable<void> {
-                head_type.assign(ct);
+        const fut::response::sink sink{
+            [&](const fut::response& head) -> asio::awaitable<void> {
+                head_type = head.content_type;
                 co_return;
             },
             [&](std::string_view bytes) -> asio::awaitable<void> {
@@ -520,17 +520,21 @@ TEST_CASE("load fut_app_demo and drive its routes") {
                 finished = "yes";
                 co_return;
             },
-            [](std::chrono::milliseconds) -> asio::awaitable<void> { co_return; }};
+            [&](const fut::response&) -> asio::awaitable<void> { co_return; }};
 
-        fut::request req{"GET", "/api/demo/events", "/api/demo/events", {}, {}, {}};
+        fut::response out;
+        out.bind(&sink);
+        fut::request req{"GET", "/api/demo/events", "/api/demo/events", {}, {}, {}, {}, &out};
         ioc.restart();
+        fut::response produced;
         asio::co_spawn(ioc, [&]() -> asio::awaitable<void> {
-            co_await rt.dispatch(req, s);
-            co_await s.finish();
+            produced = co_await rt.dispatch(req);
+            if (!out.started()) out.absorb(produced);
+            co_await out.end();
         }, asio::detached);
         ioc.run();
 
-        CHECK(s.started());
+        CHECK(out.started());
         CHECK(head_type == "text/event-stream");
         CHECK(body.find("event: tick\ndata: 0\n\n") != std::string::npos);
         CHECK(body.find("event: tick\ndata: 4\n\n") != std::string::npos);
@@ -539,19 +543,21 @@ TEST_CASE("load fut_app_demo and drive its routes") {
 
     SUBCASE("streaming: a plain chunked body") {
         std::string body;
-        fut::stream s{
-            [](unsigned, std::string_view, const auto&) -> asio::awaitable<void> { co_return; },
+        const fut::response::sink sink{
+            [](const fut::response&) -> asio::awaitable<void> { co_return; },
             [&](std::string_view bytes) -> asio::awaitable<void> {
                 body.append(bytes);
                 co_return;
             },
             []() -> asio::awaitable<void> { co_return; },
-            [](std::chrono::milliseconds) -> asio::awaitable<void> { co_return; }};
+            [](const fut::response&) -> asio::awaitable<void> { co_return; }};
 
-        fut::request req{"GET", "/api/demo/stream", "/api/demo/stream", {}, {}, {}};
+        fut::response out;
+        out.bind(&sink);
+        fut::request req{"GET", "/api/demo/stream", "/api/demo/stream", {}, {}, {}, {}, &out};
         ioc.restart();
         asio::co_spawn(ioc, [&]() -> asio::awaitable<void> {
-            co_await rt.dispatch(req, s);
+            co_await rt.dispatch(req);
         }, asio::detached);
         ioc.run();
 

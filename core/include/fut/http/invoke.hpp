@@ -27,7 +27,6 @@
 
 #include <fut/http/bind.hpp>
 #include <fut/http/form.hpp>
-#include <fut/http/stream.hpp>
 #include <fut/json.hpp>
 #include <fut/http/route.hpp>
 #include <fut/url.hpp>
@@ -145,10 +144,10 @@ decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm,
     if constexpr (std::is_same_v<Bare, ::fut::request>) {
         return static_cast<const ::fut::request&>(req);
     }
-    else if constexpr (std::is_same_v<Bare, ::fut::stream>) {
-        if (req.body_stream == nullptr)
-            throw ::fut::bind_error("no stream on this dispatch");
-        return static_cast<::fut::stream&>(*req.body_stream);
+    else if constexpr (std::is_same_v<Bare, ::fut::response>) {
+        if (req.body_response == nullptr)
+            throw ::fut::bind_error("this dispatch has no response to write to");
+        return static_cast<::fut::response&>(*req.body_response);
     }
     else if constexpr (std::is_same_v<Bare, ::fut::path_match>) {
         return static_cast<const ::fut::path_match&>(pm);
@@ -206,7 +205,7 @@ decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm,
                       "fut: this route parameter needs a binding annotation "
                       "(from_body / from_query / from_path / from_header / "
                       "from_form / from_file) or must be 'const fut::request&' / "
-                      "'const fut::path_match&' / 'fut::stream&'");
+                      "'const fut::path_match&' / 'fut::response&'");
     }
 }
 

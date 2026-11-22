@@ -1,16 +1,20 @@
 #pragma once
 
-// Streaming responses: a chunked body, and Server-Sent Events.
+// Streaming responses -- through the response object itself.
 //
-// A streaming action takes fut::stream& (and returns awaitable<void>): it sends
-// the head itself, then writes body pieces while the client is already reading.
-// The transport is HTTP/1.1 chunked, so no Content-Length is needed and the
-// connection stays keep-alive afterwards.
+// The connection creates a fut::response at the start of the request and binds
+// it to the socket. An action that takes fut::response& writes into that object:
 //
-// Every write() awaits the socket: that is the backpressure. A client that
-// reads slowly slows the producer down instead of growing a buffer.
+//     begin()      send the head (status, headers, media type)
+//     write()      send one body chunk
+//     sse()        send one Server-Sent Event frame
+//     end()        finish (the connection loop calls it when the action returns)
+//
+// An action that never writes leaves the response untouched, and the ordinary
+// "return a value" path takes over.
 
 #include "../common.hpp"
+#include "../services.hpp"
 
 namespace demo {
 
@@ -18,11 +22,11 @@ struct [[=fut::controller{}]] stream_controller {
 
     // text/event-stream: five ticks, 20 ms apart.
     [[=fut::http_get("/events")]]
-    asio::awaitable<void> events(fut::stream& out);
+    asio::awaitable<void> events(fut::response& out);
 
     // A plain chunked body, one line per chunk.
     [[=fut::http_get("/stream")]]
-    asio::awaitable<void> chunks(fut::stream& out);
+    asio::awaitable<void> chunks(fut::response& out);
 };
 
 } // namespace demo

@@ -42,7 +42,6 @@
 
 #include <fut/ctx.hpp>
 #include <fut/http/route.hpp>
-#include <fut/http/stream.hpp>
 
 namespace fut::http {
 
