@@ -421,17 +421,55 @@ TEST_CASE("load fut_app_demo and drive its routes") {
         CHECK(v->group == "demo.audit");
     }
 
-    SUBCASE("GET /fail/418 -- the action chooses the status") {
-        const auto res = run(ioc, rt, fut::method::GET, "/api/demo/fail/418");
-        CHECK(res.status == 418);
-        CHECK(res.body.find("requested failure 418") != std::string::npos);
+    SUBCASE("GET /error/{kind} -- the whole mapping table") {
+        struct expected {
+            const char* kind;
+            unsigned status;
+            const char* message;
+        };
+        const expected cases[] = {
+            {"400", 400, "the client sent something unusable"},
+            {"401", 401, "no token on this route"},
+            {"403", 403, "this is not yours"},
+            {"404", 404, "nothing lives at that path"},
+            {"409", 409, "that already exists"},
+            {"418", 418, "i am a teapot"},
+        };
+        for (const auto& c : cases) {
+            const auto res = run(ioc, rt, fut::method::GET,
+                                 std::string("/api/demo/error/") + c.kind);
+            CHECK(res.status == c.status);
+            CHECK(res.body.find(c.message) != std::string::npos);
+        }
+
+        // an unexpected exception is a 500, and the detail stays out of the body
+        const auto boom = run(ioc, rt, fut::method::GET, "/api/demo/error/500");
+        CHECK(boom.status == 500);
+        CHECK(boom.body.find("must not leak") == std::string::npos);
+        CHECK(boom.body.find("internal server error") != std::string::npos);
     }
 
-    SUBCASE("GET /boom -- an unexpected exception is a 500 without details") {
-        const auto res = run(ioc, rt, fut::method::GET, "/api/demo/boom");
-        CHECK(res.status == 500);
-        CHECK(res.body.find("must not see") == std::string::npos);
-        CHECK(res.body.find("internal server error") != std::string::npos);
+    SUBCASE("app middleware filters /secure and stamps what comes back") {
+        // no token: the middleware answers 401 without reaching the handler,
+        // and the outer middleware still stamps the response
+        const auto denied = run(ioc, rt, fut::method::GET, "/api/demo/secure/ping");
+        CHECK(denied.status == 401);
+        CHECK(denied.body.find("missing X-Demo-Token") != std::string::npos);
+        CHECK(has_header(denied, "X-Demo-App", "yes"));
+
+        // with the token the handler runs
+        const std::pair<std::string_view, std::string_view> headers[] = {
+            {"X-Demo-Token", "let-me-in"}};
+        const auto ok = run(ioc, rt, fut::method::GET, "/api/demo/secure/ping", "", "", headers);
+        CHECK(ok.status == 200);
+        CHECK(ok.body.find("secure") != std::string::npos);
+    }
+
+    SUBCASE("a middleware that throws is mapped like a handler error") {
+        const std::pair<std::string_view, std::string_view> headers[] = {{"X-Demo-Burst", "1"}};
+        const auto res = run(ioc, rt, fut::method::GET, "/api/demo/ping", "", "", headers);
+        CHECK(res.status == 429);
+        CHECK(res.body.find("rate limiting") != std::string::npos);
     }
 
     SUBCASE("app middleware stamps the app's routes only") {

@@ -1,35 +1,35 @@
 #pragma once
 
-// App-scoped middleware.
+// App-scoped middleware, registered by annotation.
 //
-// A middleware is a coroutine that either answers the request or continues the
-// chain. This one continues and rewrites the response, stamping the app's own
-// routes. It is registered by an annotation on a plain class: the scanner
-// hands every scannable annotation to its operation().
+// A middleware is a coroutine that either answers the request itself or
+// continues the chain with next(). fut::filter takes the function and hands it
+// to the router while the app loads -- the app writes no registration code.
 //
-// Scope: this runs for the routes of THIS app only, after the executable's
-// platform middleware. A 404 belongs to no app, so it does not run at all.
+// Declaration order is run order: stamp is outermost, so it sees the response
+// of everything inside it, guard included.
 //
-// The coroutine is declared here and defined in middleware.cpp; only the
-// registration template has to stay in the header, because the scan
-// instantiates it.
+// The three shapes worth copying:
+//   * stamp  -- rewriting: calls next(), then adds headers to the response;
+//   * guard  -- filtering: answers 401 itself, without calling next();
+//   * guard  -- failing: throws fut::http_error, which the router maps like a
+//               handler error (the client still gets a proper status and body).
+//
+// Scope: these run for the routes of THIS app only, after the executable's
+// platform middleware. A 404 belongs to no app, so they do not run at all.
 
 #include "common.hpp"
 
 namespace demo {
 
+[[=fut::filter{}]]
 asio::awaitable<fut::response> stamp(const fut::request& req,
                                      const fut::path_match& params,
                                      const fut::http::next_fn& next);
 
-struct filter : fut::scannable {
-    template <std::meta::info Entity>
-    void operation(fut::fut_ctx* ctx) const {
-        const auto* rm = ctx->get_module<fut::http::router_module>("router");
-        if (rm && rm->add_middleware) rm->add_middleware(rm->self, &stamp);
-    }
-};
-
-struct [[=filter{}]] register_filter;
+[[=fut::filter{}]]
+asio::awaitable<fut::response> guard(const fut::request& req,
+                                     const fut::path_match& params,
+                                     const fut::http::next_fn& next);
 
 } // namespace demo

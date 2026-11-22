@@ -38,4 +38,6 @@ asio::awaitable<request_out> demo_controller::request_info(const fut::request& r
                           std::string(req.query), req.headers.size()};
 }
 
+asio::awaitable<pong> demo_controller::secure_ping() { co_return pong{true, "secure"}; }
+
 } // namespace demo

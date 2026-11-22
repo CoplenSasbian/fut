@@ -46,6 +46,11 @@ struct [[=fut::controller{}]] demo_controller {
     // a plain request parameter needs no binding annotation
     [[=fut::http_get("/request")]]
     asio::awaitable<request_out> request_info(const fut::request& req);
+
+    // Protected by the app middleware: without X-Demo-Token this is a 401 and
+    // the handler never runs.
+    [[=fut::http_get("/secure/ping")]]
+    asio::awaitable<pong> secure_ping();
 };
 
 } // namespace demo

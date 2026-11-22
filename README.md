@@ -167,12 +167,12 @@ apps/demo/
 ├── common.hpp              shared preamble (asio alias, fut/http, inject headers)
 ├── dto.hpp                 plain aggregates; declares all_routes()
 ├── services.hpp / .cpp     injected io_context and log groups (extern decl + def)
-├── middleware.hpp / .cpp   the app-scoped filter
+├── middleware.hpp / .cpp   two app filters: rewriting + filtering/throwing
 ├── routes.hpp / .cpp       collect<T>() template; all_routes() body
 └── routes/
-    ├── core.hpp     / .cpp      GET ping/info/text/custom/query/header/request
+    ├── core.hpp     / .cpp      GET ping/info/text/custom/query/header/request/secure/ping
     ├── binding.hpp  / .cpp      POST body / body-scalar / form / upload
-    ├── runtime.hpp  / .cpp      GET io/log/audit-group/fail/{code}/boom
+    ├── runtime.hpp  / .cpp      GET io/log/audit-group/error/{kind}
     ├── items.hpp    / .cpp      /items: hits, get, put, delete (stateful)
     └── nested.hpp   / .cpp      a controller one namespace deeper
 ```
@@ -508,18 +508,25 @@ asio::awaitable<fut::response> log_request(const fut::request& req,
 // executable: platform scope
 fut::exec::server().add_middleware(&log_request).run();
 
-// app DLL: app scope, registered by an ordinary scannable annotation
+// app DLL: app scope -- fut::filter is the library's annotation, no
+// registration code in the app at all
 namespace demo {
-struct filter : fut::scannable {
-    template <std::meta::info Entity>
-    void operation(fut::fut_ctx* ctx) const {
-        const fut::http::router_module* rm = fut::http::router_of(ctx);
-        if (rm && rm->add_middleware) rm->add_middleware(rm->self, &stamp_app);
-    }
-};
-struct [[=filter{}]] register_filter;
+[[=fut::filter{}]]
+asio::awaitable<fut::response> stamp(const fut::request& req,
+                                     const fut::path_match& params,
+                                     const fut::http::next_fn& next) {
+    fut::response res = co_await next(req, params);
+    res.headers.emplace_back("X-Demo-App", "yes");
+    co_return res;
 }
+} // namespace demo
 ```
+
+`fut::filter` enforces the signature at compile time (return type and parameter types), and
+declaration order is run order: the first filter declared is outermost. The demo app shows the
+three shapes in `apps/demo/middleware.hpp` — **rewriting** (calls `next()`, adds headers),
+**filtering** (answers 401 itself, never calling `next()`), and **failing** (throws
+`fut::http_error`, which the router maps like a handler error).
 
 **Why not cross-app?** Apps are independent deployment units: an app's DLL is swapped without
 rebuilding anything else, and a middleware registered by one app must not silently change another
@@ -533,8 +540,14 @@ route handler. A middleware may short-circuit (returning a `fut::response` witho
 ```bash
 curl -D- -o /dev/null http://127.0.0.1:8080/api/demo/ping
 # HTTP/1.1 200 OK
-# X-Demo-App: yes              <- the demo app's own middleware
-# X-Fut-Elapsed-Us: 46        <- platform middleware (also present on 404s)
+# X-Demo-App: yes              <- app middleware (rewriting)
+# X-Demo-Elapsed-Us: 25        <- app middleware, timed
+
+curl -w ' [%{http_code}]' http://127.0.0.1:8080/api/demo/secure/ping
+# {"error":"missing X-Demo-Token"} [401]      <- app middleware (filtering, handler never ran)
+
+curl -H 'X-Demo-Burst: 1' -w ' [%{http_code}]' http://127.0.0.1:8080/api/demo/ping
+# {"error":"the demo is rate limiting this request"} [429]   <- middleware threw
 ```
 
 Two implementation notes:
@@ -572,6 +585,9 @@ asio::awaitable<pong_dto> fail([[=fut::from_path("code")]] int code) {
 curl -w " [%{http_code}]" http://127.0.0.1:8080/api/demo/fail/418
 # {"error":"requested failure 418"} [418]
 ```
+
+The demo app publishes the whole table as one route — `/api/demo/error/{kind}` with
+`400`/`401`/`403`/`404`/`409`/`418`/`500` — so every row below is one curl away.
 
 Helpers: `bad_request`, `unauthorized`, `forbidden`, `not_found`, `method_not_allowed`,
 `conflict`, `payload_too_large`, `unsupported_media_type`, `unprocessable`, `too_many_requests`,
@@ -959,6 +975,7 @@ fut/
 │   │   ├── http.hpp        one include for the HTTP stack
 │   │   ├── route.hpp       request/response, method enum, path matching, join_path
 │   │   ├── error.hpp       fut::http_error + the named 4xx/5xx helpers
+│   │   ├── filter.hpp      fut::filter: register an app middleware by annotation
 │   │   ├── router.hpp      router_module: the interface a DLL registers through
 │   │   ├── bind.hpp        from_body / from_query / from_path / from_header /
 │   │   │                    from_form / from_file

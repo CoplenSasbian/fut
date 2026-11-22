@@ -26,13 +26,10 @@ struct [[=fut::controller{}]] runtime_controller {
     [[=fut::http_get("/audit-group")]]
     asio::awaitable<log_out> audit_group();
 
-    // a chosen status: fut::http_error keeps it
-    [[=fut::http_get("/fail/{code}")]]
-    asio::awaitable<pong> fail([[=fut::from_path("code")]] int code);
-
-    // anything unexpected becomes a 500; the detail stays in the log
-    [[=fut::http_get("/boom")]]
-    asio::awaitable<pong> boom();
+    // The whole error mapping in one place: the kind names the failure, and
+    // the router turns the exception into the status and the body.
+    [[=fut::http_get("/error/{kind}")]]
+    asio::awaitable<pong> error([[=fut::from_path("kind")]] std::string kind);
 };
 
 } // namespace demo
