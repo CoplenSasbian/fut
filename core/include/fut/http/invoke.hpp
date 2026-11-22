@@ -218,17 +218,31 @@ template <class Raw> using await_value_t = typename await_value<Raw>::type;
 template <class Raw>
 inline constexpr bool is_awaitable_v = requires { typename await_value<Raw>::type; };
 
+// What an action returned becomes the body of the connection's response.
+template <class T>
+void adapt_into(::fut::response& out, T&& value) {
+    using V = std::remove_cvref_t<T>;
+    static_assert(!std::is_same_v<V, ::fut::response>,
+                  "an action returns a payload (a DTO, a string) or writes into "
+                  "fut::response& -- it never returns a response object");
+    if constexpr (std::is_same_v<V, std::string> || std::is_same_v<V, std::string_view> ||
+                  std::is_same_v<V, const char*>) {
+        out.set_text(std::string(std::forward<T>(value)));
+    } else if constexpr (std::is_arithmetic_v<V>) {
+        out.set_text(std::to_string(value));
+    } else {
+        out.dto(value);
+    }
+}
+
 template <meta::info F, std::size_t... P>
 boost::asio::awaitable<void> invoke_free_impl(
     const ::fut::request& req, const ::fut::path_match& pm, ::fut::response& out,
     std::index_sequence<P...>) {
     using Raw = [: meta::return_type_of(F) :];
     static_assert(is_awaitable_v<Raw>,
-                  "fut: an action must return boost::asio::awaitable<void>");
+                  "fut: an action must return boost::asio::awaitable<...>");
     using Val = await_value_t<Raw>;
-    static_assert(std::is_void_v<Val>,
-                  "fut: an action returns awaitable<void> and writes into fut::response& -- "
-                  "there is no response-by-return form");
 
     constexpr bool wants_form = needs_form<F>();
     std::optional<::fut::form_data> parsed_form{};
@@ -236,7 +250,12 @@ boost::asio::awaitable<void> invoke_free_impl(
     const ::fut::form_data* form = nullptr;
     if constexpr (wants_form) form = &*parsed_form;
 
-    co_await ([: F :])(make_arg<F, P>(req, pm, out, form)...);
+    if constexpr (std::is_void_v<Val>) {
+        co_await ([: F :])(make_arg<F, P>(req, pm, out, form)...);
+    } else {
+        auto value = co_await ([: F :])(make_arg<F, P>(req, pm, out, form)...);
+        adapt_into(out, std::move(value));
+    }
 }
 
 template <meta::info F>
@@ -244,7 +263,7 @@ boost::asio::awaitable<void> invoke_route(const ::fut::request& req,
                                           const ::fut::path_match& pm,
                                           ::fut::response& out) {
     constexpr std::size_t n = meta::parameters_of(F).size();
-    return invoke_impl<F>(req, pm, out, std::make_index_sequence<n>{});
+    return invoke_free_impl<F>(req, pm, out, std::make_index_sequence<n>{});
 }
 
 template <class T>
@@ -253,19 +272,14 @@ T& controller_instance() {
     return instance;
 }
 
-
-
 template <class T, meta::info M, std::size_t... P>
 boost::asio::awaitable<void> invoke_member_impl(
     const ::fut::request& req, const ::fut::path_match& pm, ::fut::response& out,
     std::index_sequence<P...>) {
     using Raw = [: meta::return_type_of(M) :];
     static_assert(is_awaitable_v<Raw>,
-                  "fut: an action must return boost::asio::awaitable<void>");
+                  "fut: an action must return boost::asio::awaitable<...>");
     using Val = await_value_t<Raw>;
-    static_assert(std::is_void_v<Val>,
-                  "fut: an action returns awaitable<void> and writes into fut::response& -- "
-                  "there is no response-by-return form");
 
     constexpr bool wants_form = needs_form<M>();
     std::optional<::fut::form_data> parsed_form{};
@@ -274,7 +288,12 @@ boost::asio::awaitable<void> invoke_member_impl(
     if constexpr (wants_form) form = &*parsed_form;
 
     auto& self = controller_instance<T>();
-    co_await (self.[: M :])(make_arg<M, P>(req, pm, out, form)...);
+    if constexpr (std::is_void_v<Val>) {
+        co_await (self.[: M :])(make_arg<M, P>(req, pm, out, form)...);
+    } else {
+        auto value = co_await (self.[: M :])(make_arg<M, P>(req, pm, out, form)...);
+        adapt_into(out, std::move(value));
+    }
 }
 
 template <meta::info Owner, meta::info M>

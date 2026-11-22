@@ -647,16 +647,20 @@ Two implementation notes:
 ## One response, created by the connection
 
 `fut::response` is what to send **and** the writing of it. The connection creates one at the start
-of the request, hands it to the action as `fut::response&`, and writes it out afterwards. There is
-no second way to answer and no response-by-return form:
+of the request and writes it out afterwards. An action either **returns a payload** (a DTO, a
+string), which the framework adapts into that response, or **takes `fut::response&` and writes
+itself** -- for raw control and streaming. It never returns a response object:
 
 ```cpp
-[[=fut::http_post("/items")]]                        // ordinary action
-asio::awaitable<void> create([[=fut::from_body{}]] item in, fut::response& out) {
-    out.set_status(201).dto(in);                     // status + JSON body
+[[=fut::http_post("/items")]]                        // payload: adapted for you
+asio::awaitable<item> create([[=fut::from_body{}]] item in) {
+    co_return item{in.id, in.name, 1};               // -> JSON, 200
 }
 
-[[=fut::http_get("/events")]]                         // streaming: same object
+[[=fut::http_get("/health")]]                        // a string becomes text/plain
+asio::awaitable<std::string> health() { co_return "ok"; }
+
+[[=fut::http_get("/events")]]                         // writer: status, headers, streaming
 asio::awaitable<void> events(fut::response& out) {
     out.set_type("text/event-stream").set_header("Cache-Control", "no-cache");
     co_await out.begin();                            // head goes out here
@@ -664,8 +668,15 @@ asio::awaitable<void> events(fut::response& out) {
 }
 ```
 
-The two bodies differ only in *when* bytes leave: `begin()`/`write()`/`sse()` stream them while the
-action runs; otherwise the whole answer is written once, after the action returns.
+| What the action does | What the framework does |
+| --- | --- |
+| returns a DTO | serializes it as JSON, status 200 |
+| returns `std::string` | `text/plain`, status 200 |
+| returns `int` (or any arithmetic) | `text/plain` with the number |
+| takes `fut::response&` and returns `void` | nothing -- the action already filled it |
+
+A `fut::response` returned by value is rejected at compile time: the connection owns that object.
+Use the parameter form when you need a status, headers, a cookie, or to stream.
 
 | On the response | Does |
 | --- | --- |

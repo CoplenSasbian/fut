@@ -2,9 +2,6 @@
 
 namespace demo::nested {
 
-asio::awaitable<void> nested_controller::ping(fut::response& out) {
-    out.dto(pong{true, "nested"});
-    co_return;
-}
+asio::awaitable<pong> nested_controller::ping() { co_return pong{true, "nested"}; }
 
 } // namespace demo::nested

@@ -1,25 +1,20 @@
 #include "items.hpp"
 
-#include <string>
-
 namespace demo {
 
-asio::awaitable<void> items_controller::hits_count(fut::response& out) {
+asio::awaitable<greeting_out> items_controller::hits_count() {
     const auto n = hits.fetch_add(1, std::memory_order_relaxed) + 1;
-    out.dto(greeting_out{"hits", static_cast<int>(n), static_cast<long long>(n)});
-    co_return;
+    co_return greeting_out{"hits", static_cast<int>(n), static_cast<long long>(n)};
 }
 
-asio::awaitable<void> items_controller::get(long long id, fut::response& out) {
+asio::awaitable<item> items_controller::get(long long id) {
     if (id <= 0) throw fut::not_found("no item " + std::to_string(id));
-    out.dto(item{id, "item-" + std::to_string(id), 1});
-    co_return;
+    co_return item{id, "item-" + std::to_string(id), 1};
 }
 
-asio::awaitable<void> items_controller::update(long long id, item in, fut::response& out) {
+asio::awaitable<item> items_controller::update(long long id, item in) {
     in.id = id;
-    out.dto(in);
-    co_return;
+    co_return in;
 }
 
 asio::awaitable<void> items_controller::remove(long long id, fut::response& out) {
