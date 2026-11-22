@@ -52,8 +52,7 @@ option(FUT_BUILD_TESTS "Build the doctest suite" ON)
 include(${CMAKE_SOURCE_DIR}/cmake/fut.cmake)
 
 add_subdirectory(src/exec)
-add_subdirectory(apps/admin)
-add_subdirectory(apps/web)
+add_subdirectory(apps/demo)
 
 fut_app_summary()
 

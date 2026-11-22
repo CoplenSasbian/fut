@@ -113,30 +113,32 @@ bin/
 ├── libstdc++-6.dll  libgcc_s_seh-1.dll  libwinpthread-1.dll
 ├── test_*.exe
 └── apps/
-    ├── fut_app_admin.dll
-    └── fut_app_web.dll
+    └── fut_app_demo.dll
 ```
 
 ```bash
 curl http://127.0.0.1:8080/api/core/status
-curl http://127.0.0.1:8080/api/admin/ping                 # {"pong":true,"app":"admin"}
-curl -X POST -d '{"message":"hi","count":4}' http://127.0.0.1:8080/api/admin/echo
-curl http://127.0.0.1:8080/api/web/sum/6/7                # {"a":6,"b":7,"sum":13}
-curl http://127.0.0.1:8080/api/admin/raw                  # plain text, text/plain
+curl http://127.0.0.1:8080/api/demo/ping                  # {"pong":true,"app":"demo"}
+curl "http://127.0.0.1:8080/api/demo/query?name=yue&count=4"   # {"message":"yue!","doubled":8,"sum":10}
+curl -X POST -d '{"message":"hi","count":4}' http://127.0.0.1:8080/api/demo/body
+curl -X PUT  -d '{"name":"widget","quantity":3}' http://127.0.0.1:8080/api/demo/items/7
+curl -X DELETE -w '%{http_code}\n' http://127.0.0.1:8080/api/demo/items/9   # 204
+curl http://127.0.0.1:8080/api/demo/info                  # the reflected route list
+curl http://127.0.0.1:8080/api/demo/text                  # plain text, text/plain
 ```
 
 ## How an app is loaded
 
 ```
 server                                        app DLL
-  LoadLibrary("fut_app_admin.dll")
+  LoadLibrary("fut_app_demo.dll")
   ctx.app_name/app_prefix set from the exports
-  fut_app_register(ctx)  ───────────────────▶  scan::run<^^admin>(ctx)
+  fut_app_register(ctx)  ───────────────────▶  scan::run<^^demo>(ctx)
                                                   │
   ctx.get_module("router")  ◀───────────────────┤  find [[=fut::controller]] classes
    -> void*, cast to router_module*              │  call annotation.operation<Class>(ctx)
                                                   ▼
-  router.add_route(self, GET, "/api/admin/ping", &fn)
+  router.add_route(self, GET, "/api/demo/ping", &fn)
 ```
 
 * The server owns the router; a DLL never links against the executable.
@@ -156,57 +158,65 @@ server                                        app DLL
 ## Writing an app
 
 An app is a Django-style unit: a name, a URL prefix, and controller classes in the namespace named
-after the app.
+after the app. `apps/demo` is the reference implementation — one DLL that exercises every feature:
 
-```cpp
-// apps/web/web_routes.hpp -- annotated controller declarations
-#include <fut/http/http.hpp>
-
-namespace asio = boost::asio;
-
-struct calc_in  { double a{}; double b{}; std::string op{}; };
-struct calc_out { double result{}; std::string op{}; };
-struct sum_out  { long long a{}; long long b{}; long long sum{}; };
-
-namespace web {                        // <- the add_app() name, verbatim
-
-struct [[=fut::controller{}]] web_controller {
-
-    [[=fut::http_get("/ping")]]
-    asio::awaitable<std::string> ping();                              // plain string -> text/plain
-
-    [[=fut::http_post("/calc")]]
-    asio::awaitable<calc_out> calc([[=fut::from_body{}]] calc_in in); // JSON body -> DTO
-
-    [[=fut::http_get("/sum/{a}/{b}")]]
-    asio::awaitable<sum_out> sum([[=fut::from_path("a")]] long long a,
-                                 [[=fut::from_path("b")]] long long b);
-};
-
-namespace beta {
-// nested namespace: the scan descends into it, so this controller is found
-struct [[=fut::controller("/beta")]] beta_controller {
-    [[=fut::http_get("/note")]]
-    asio::awaitable<std::string> note();                              // -> /beta/note
-};
-} // namespace beta
-
-} // namespace web
+```
+apps/demo/
+├── CMakeLists.txt          add_app(demo /api/demo demo.hpp)   <- the whole build script
+├── demo.hpp                umbrella: includes the modules in order
+├── common.hpp              shared preamble (the asio alias, fut/http)
+├── dto.hpp                 plain aggregates; declares all_routes()
+├── services.hpp            injected io_context and log group
+├── middleware.hpp          the app-scoped filter
+├── routes.hpp              all_routes(): reflects over the controllers
+└── routes/
+    ├── core.hpp            GET ping/info/text/custom/query/header/request
+    ├── binding.hpp         POST body / body-scalar / form / upload
+    ├── services.hpp        GET io/log/fail/{code}/boom
+    ├── items.hpp           /items: hits, get, put, delete (stateful)
+    └── nested.hpp          a controller one namespace deeper
 ```
 
-Definitions live in `web_routes.cpp` as an ordinary translation unit
-(`asio::awaitable<sum_out> web_controller::sum(long long a, long long b) { ... }`) — no annotations
-there.
+Only the umbrella is listed in `add_app()`; adding a controller means adding one `#include` to
+`demo.hpp`. A feature module is an ordinary header:
+
+```cpp
+// apps/demo/routes/binding.hpp
+#pragma once
+#include "../common.hpp"
+#include "../dto.hpp"
+
+namespace demo {
+
+struct [[=fut::controller{}]] binding_controller {
+
+    [[=fut::http_post("/body")]]                       // -> POST /api/demo/body
+    asio::awaitable<greeting_out> body([[=fut::from_body{}]] greeting_in in);
+
+    [[=fut::http_post("/form")]]                       // -> POST /api/demo/form
+    asio::awaitable<greeting_out> form([[=fut::from_form{}]] greeting_in in);
+
+    [[=fut::http_post("/upload")]]                     // -> POST /api/demo/upload
+    asio::awaitable<upload_out> upload([[=fut::from_form{}]] std::string title,
+                                       [[=fut::from_file{}]] fut::uploaded_file file);
+};
+
+} // namespace demo
+```
+
+Definitions can live in a `.cpp` in the same directory (`asio::awaitable<greeting_out>
+binding_controller::body(greeting_in in) { ... }`) — no annotations there; list it in `add_app()`
+as one more source.
 
 Wire it up with the `add_app()` helper (defined in `cmake/fut.cmake`, included by the top-level
 `CMakeLists.txt`):
 
 ```cmake
-# apps/web/CMakeLists.txt -- this one line is the whole build script.
-add_app(web /api/web web_routes.hpp web_routes.cpp)
+# apps/demo/CMakeLists.txt -- this one line is the whole build script.
+add_app(demo /api/demo demo.hpp)
 ```
 
-`add_app(<name> <prefix> [sources...])` creates the `fut_app_<name>` MODULE target, places
+ `fut_app_<name>` MODULE target, places
 `fut_app_<name>.dll` into `bin/apps`, adds the include path and the standard link set
 (`Boost::asio`, `glaze::glaze`), defines `FUT_APP_NAME` / `FUT_APP_PREFIX` as quoted literals, and
 validates the prefix at configure time (must start with `/`, must not end with `/`).
@@ -219,9 +229,9 @@ CMake writes one translation unit per app at configure time:
 // Generated by fut's add_app(); do not edit.
 #include <fut/app.hpp>          // generic entry: scan contract + export macro
 
-#include <web_routes.hpp>
+#include <demo.hpp>
 
-FUT_EXPORT_APP_NS(FUT_APP_NAME, FUT_APP_PREFIX, ^^web)
+FUT_EXPORT_APP_NS(FUT_APP_NAME, FUT_APP_PREFIX, ^^demo)
 ```
 
 `<fut/app.hpp>` is generic — it knows that a module is scanned and that the executable calls one
@@ -236,7 +246,7 @@ std::uint32_t fut_abi_version();
 const char*   fut_app_name();
 const char*   fut_app_prefix();
 void          fut_app_register(fut::fut_ctx* ctx) {
-    fut::scan::run<^^web>(ctx);
+    fut::scan::run<^^demo>(ctx);
 }
 }
 ```
@@ -281,8 +291,8 @@ Two app layouts are supported, picked per source extension:
 header, plain definitions in `.cpp` files — reflection works on declarations, no definition has to be
 visible to the scanner; the generated unit's calls resolve through the linker.
 
-**Header-only (fine for small apps).** List only headers and define the actions inline there
-(`apps/admin` does this); the generated unit includes them — one scan, one definition.
+**Header-only (what `apps/demo` does).** List only the umbrella header and define the actions
+inline in the modules it includes; the generated unit includes them — one scan, one definition.
 
 **Annotation placement is enforced.** The scan sees exactly what the listed headers declare, so
 route annotations have exactly one legal home:
@@ -302,33 +312,33 @@ A controller is the scannable annotation: a class annotated in the standard clas
 annotation on each, and registers one route per method. The route path is composed from three parts:
 
 ```
-add_app(admin /api/admin ...)   ->  "/api/admin"     (compile-time macro)
+add_app(demo /api/demo ...)     ->  "/api/demo"      (compile-time macro)
 [[=fut::controller("/users")]]  ->  "/users"         (class annotation)
 [[=fut::http_get("/{id}/name")]]->  "/{id}/name"     (method annotation)
-                                    => /api/admin/users/{id}/name
+                                    => /api/demo/items/{id}
 ```
 
 One instance per controller type is created lazily per DLL (a thread-safe magic static), so state
 persists across requests.
 
 ```cpp
-namespace admin {
+namespace demo {
 
-struct [[=fut::controller("/users")]] users_controller {
-    std::atomic<std::uint64_t> hits_{0};
+struct [[=fut::controller("/items")]] items_controller {
+    std::atomic<std::uint64_t> hits{0};
 
-    [[=fut::http_get("/hits")]]                        // -> GET /api/admin/users/hits
-    asio::awaitable<hits_out> hits() {
-        co_return hits_out{hits_.fetch_add(1, std::memory_order_relaxed)};
+    [[=fut::http_get("/hits")]]                        // -> GET /api/demo/items/hits
+    asio::awaitable<greeting_out> hits_count() {
+        co_return greeting_out{"hits", 1, hits.fetch_add(1, std::memory_order_relaxed)};
     }
 
-    [[=fut::http_get("/{id}/name")]]                   // -> GET /api/admin/users/{id}/name
-    asio::awaitable<user_name_out> name([[=fut::from_path("id")]] long long id) {
-        co_return user_name_out{id, "user-" + std::to_string(id)};
+    [[=fut::http_get("/{id}")]]                        // -> GET /api/demo/items/{id}
+    asio::awaitable<item> get([[=fut::from_path("id")]] long long id) {
+        co_return item{id, "item-" + std::to_string(id), 1};
     }
 };
 
-} // namespace admin
+} // namespace demo
 ```
 
 Member actions must be public (the invoke splices through them); parameter binding and return-type
@@ -463,15 +473,15 @@ asio::awaitable<fut::response> log_request(const fut::request& req,
 fut::exec::server().add_middleware(&log_request).run();
 
 // app DLL: app scope, registered by an ordinary scannable annotation
-namespace admin {
-struct app_filter : fut::scannable {
+namespace demo {
+struct filter : fut::scannable {
     template <std::meta::info Entity>
     void operation(fut::fut_ctx* ctx) const {
         const fut::http::router_module* rm = fut::http::router_of(ctx);
         if (rm && rm->add_middleware) rm->add_middleware(rm->self, &stamp_app);
     }
 };
-struct [[=app_filter{}]] filters {};
+struct [[=filter{}]] register_filter;
 }
 ```
 
@@ -485,9 +495,9 @@ route handler. A middleware may short-circuit (returning a `fut::response` witho
 `next`), rewrite the response, or both:
 
 ```bash
-curl -D- -o /dev/null http://127.0.0.1:8080/api/admin/ping
+curl -D- -o /dev/null http://127.0.0.1:8080/api/demo/ping
 # HTTP/1.1 200 OK
-# X-Fut-App: admin            <- the admin app's own middleware
+# X-Demo-App: yes              <- the demo app's own middleware
 # X-Fut-Elapsed-Us: 46        <- platform middleware (also present on 404s)
 ```
 
@@ -523,7 +533,7 @@ asio::awaitable<pong_dto> fail([[=fut::from_path("code")]] int code) {
 ```
 
 ```bash
-curl -w " [%{http_code}]" http://127.0.0.1:8080/api/admin/fail/418
+curl -w " [%{http_code}]" http://127.0.0.1:8080/api/demo/fail/418
 # {"error":"requested failure 418"} [418]
 ```
 
@@ -555,17 +565,17 @@ registered under a type and a name (see *How an app is loaded*), and the executa
 with `server_builder::add_module`:
 
 ```cpp
-server().add_module("cache", &cache)             // keyed by typeid(cache)
-        .add_module("primary", &store_a)         // two stores: the name disambiguates
-        .add_module("archive", &store_b)
-        .run();
+fut::exec::server().add_module("cache", &cache)   // keyed by typeid(cache)
+                 .add_module("primary", &store_a)  // two stores: the name disambiguates
+                 .add_module("archive", &store_b)
+                 .run();
 ```
 
 The io_context is published automatically, so an action can post work or start a timer on the
 server's loop:
 
 ```cpp
-namespace admin {
+namespace demo {
 [[=fut::inject{}]] boost::asio::io_context* g_io = nullptr;   // assigned while the app loads
 }
 
@@ -589,21 +599,21 @@ An app DLL cannot call `fut::log::submit` — that is the executable's log core 
 `fut::log::group_ref` wired to a service the server publishes:
 
 ```cpp
-namespace admin {
-[[=fut::log_group{}]] fut::log::group_ref log;   // group "admin.log"
+namespace demo {
+[[=fut::log_group{}]] fut::log::group_ref log;   // group "demo.log"
 }
 
 [[=fut::http_get("/log")]]
 asio::awaitable<log_dto> write_log() {
-    log.info("admin /log was called");            // lands in the server's chains
+    log.info("demo /log was called");             // lands in the server's chains
     co_return log_dto{true, std::string(log.name())};
 }
 ```
 
 ```bash
-curl -s http://127.0.0.1:8080/api/admin/log
-# {"logged":true,"group":"admin.log"}
-# console: 2026-11-22 16:06:40 [INFO    ] admin.log    admin /log was called
+curl -s http://127.0.0.1:8080/api/demo/log
+# {"logged":true,"group":"demo.log"}
+# console: 2026-11-22 16:06:40 [INFO    ] demo.log     demo /log was called
 ```
 
 The name is the **app name plus the variable's identifier**, so two apps can both have a `log`
@@ -655,7 +665,7 @@ struct upload_out {
     std::string content_type{};
 };
 
-struct [[=fut::controller{}]] admin_controller {
+struct [[=fut::controller{}]] demo_controller {
     [[=fut::http_post("/upload")]]
     asio::awaitable<upload_out> upload(
         [[=fut::from_form{}]] std::string title,          // <- form field "title"
@@ -665,7 +675,7 @@ struct [[=fut::controller{}]] admin_controller {
 
 ```bash
 curl -F "title=quarterly report" -F "file=@notes.txt;type=text/plain" \
-     http://127.0.0.1:8080/api/admin/upload
+     http://127.0.0.1:8080/api/demo/upload
 # {"title":"quarterly report","filename":"notes.txt","size":28,"content_type":"text/plain"}
 ```
 
@@ -828,8 +838,8 @@ loader_log.info("app '{}' ({} route(s)) <- {}", name, count, path);
 ## Deploying a business update
 
 ```bash
-cmake --build --preset release --target fut_app_admin
-# copy build/release/bin/fut_app_admin.dll over the deployed one, restart the service
+cmake --build --preset release --target fut_app_demo
+# copy build/release/bin/fut_app_demo.dll over the deployed one, restart the service
 ```
 
 Neither the server executable nor the other app DLLs are rebuilt.
@@ -859,7 +869,7 @@ Neither the server executable nor the other app DLLs are rebuilt.
   cv-qualified — `type_of(ann) == ^^const http_action` — so verb detection filters on
   `^^const fut::http_action`. That single spot is the only place the quirk is visible.
 * **Member enumeration** utilities for DTO introspection: `include/fut/reflect.hpp`
-  (`member_count_v`, `member_names_v`, `for_each_member`); HTTP demo at `GET /api/admin/meta`.
+  (`member_count_v`, `member_names_v`, `for_each_member`); HTTP demo at `GET /api/demo/info`.
 * **glaze** serializes aggregates via compile-time reflection — no field lists to maintain.
 
 GCC 16.2 quirks the implementation works around:
@@ -911,7 +921,7 @@ fut/
 │   ├── http_parser.*       llhttp wrapper (incremental, one message, reports consumed bytes)
 │   ├── http_message.*      owned request message + response serialization
 │   └── builder/server/router/app_loader/config/log/main
-├── apps/admin | apps/web   sample apps (controller style)
+├── apps/demo/             the reference app: one DLL, every feature, split into modules
 └── tests/                  doctest suite (64 cases)
 ```
 
@@ -939,8 +949,10 @@ ctest --preset release   # 64 cases
   returns, controller path composition, nested namespaces, annotations stacked on one entity
   (including one that reads a sibling annotation's path), and that a controller nested inside a
   class is *not* scanned.
-* `test_apps` — end-to-end: the loader loads the real DLLs, they register through `fut_ctx`, and
-  the routes are driven exactly like the server does.
+* `test_apps` — end-to-end against the real `fut_app_demo.dll`: the loader loads it, it registers
+  through `fut_ctx`, and every feature is driven through `router::dispatch` exactly like the
+  server does (all binding styles, return shapes, controller state, app middleware, injected
+  services, error mapping).
 * `test_config` — the config file as an interface: chain parsing, defaults, an explicit empty
   list, and validation errors for unknown formatters, sinks, levels and file settings.
 * `test_http_parser` — the message layer: plain/chunked/bodies, split deliveries, pipelined

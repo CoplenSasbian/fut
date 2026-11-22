@@ -75,8 +75,8 @@ if(WIN32)
 endif()
 doctest_discover_tests(test_reflect_router)
 
-# End-to-end: app_loader loads fut_app_admin / fut_app_web, they register into
-# the router through fut_ctx, and their routes are driven like the server does.
+# End-to-end: app_loader loads fut_app_demo, it registers into the router
+# through fut_ctx, and its routes are driven like the server does.
 add_executable(test_apps test_apps.cpp ${PROJECT_SOURCE_DIR}/src/exec/app_loader.cpp
                               ${PROJECT_SOURCE_DIR}/src/exec/router.cpp
                               ${PROJECT_SOURCE_DIR}/src/exec/log.cpp)
@@ -85,9 +85,10 @@ target_include_directories(test_apps PRIVATE
     ${PROJECT_SOURCE_DIR}/src/exec
 )
 target_link_libraries(test_apps PRIVATE doctest::doctest Boost::asio glaze::glaze)
+add_dependencies(test_apps fut_app_demo)
 if(WIN32)
     target_link_libraries(test_apps PRIVATE ws2_32)
 endif()
 doctest_discover_tests(test_apps
-    PROPERTIES ENVIRONMENT "FUT_APPS_DIR=$<TARGET_FILE_DIR:fut_app_admin>"
+    PROPERTIES ENVIRONMENT "FUT_APPS_DIR=$<TARGET_FILE_DIR:fut_app_demo>"
 )
