@@ -15,9 +15,9 @@
 #include <fut/json.hpp>
 #include <fut/log.hpp>
 
-#include "app_loader.hpp"
-#include "module_registry.hpp"
-#include "router.hpp"
+#include <fut/exec/app_loader.hpp>
+#include <fut/exec/module_registry.hpp>
+#include <fut/exec/router.hpp>
 
 namespace asio = boost::asio;
 

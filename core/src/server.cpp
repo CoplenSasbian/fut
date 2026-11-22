@@ -18,10 +18,10 @@
 #include <fut/json.hpp>
 #include <fut/log.hpp>
 
-#include "app_loader.hpp"
-#include "config.hpp"
-#include "router.hpp"
-#include "server.hpp"
+#include <fut/exec/app_loader.hpp>
+#include <fut/exec/config.hpp>
+#include <fut/exec/router.hpp>
+#include <fut/exec/server.hpp>
 
 #if defined(_WIN32)
 #  include <windows.h>

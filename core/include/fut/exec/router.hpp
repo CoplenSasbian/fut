@@ -28,13 +28,15 @@
 
 #include <fut/http/router.hpp>
 
+#include <fut/export.hpp>
+
 namespace fut::exec {
 
 // A route's final handler: app middleware already wrapped around the route.
 using handler_fn = std::function<boost::asio::awaitable<fut::response>(
     const fut::request&, const fut::path_match&)>;
 
-class router {
+class FUT_API router {
 public:
     struct entry {
         fut::method method = fut::method::GET;

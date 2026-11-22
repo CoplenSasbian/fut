@@ -51,7 +51,8 @@ option(FUT_BUILD_TESTS "Build the doctest suite" ON)
 # Business-app helper: add_app(name, prefix, sources...)
 include(${CMAKE_SOURCE_DIR}/cmake/fut.cmake)
 
-add_subdirectory(src/exec)
+add_subdirectory(core)
+add_subdirectory(exec)
 add_subdirectory(apps/demo)
 
 fut_app_summary()

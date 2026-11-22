@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <string>
 
-#include "config.hpp"
+#include <fut/exec/config.hpp>
 
 namespace {
 

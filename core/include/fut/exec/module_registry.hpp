@@ -24,9 +24,11 @@
 
 #include <fut/ctx.hpp>
 
+#include <fut/export.hpp>
+
 namespace fut::exec {
 
-class module_registry {
+class FUT_API module_registry {
 public:
     struct entry {
         std::string name{};

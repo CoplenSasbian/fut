@@ -1,4 +1,5 @@
-// fut_server entry point -- a thin shell over fut::exec::server.
+// fut_server entry point -- a thin shell over fut::exec::server, which lives
+// in the fut_core library. Nothing here is server machinery.
 
 #include <chrono>
 #include <cstdio>
@@ -10,7 +11,7 @@
 #include <fut/http/router.hpp>
 #include <fut/log.hpp>
 
-#include "server.hpp"
+#include <fut/exec/server.hpp>
 
 namespace {
 

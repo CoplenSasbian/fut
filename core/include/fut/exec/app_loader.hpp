@@ -15,12 +15,14 @@
 #include <string>
 #include <vector>
 
-#include "module_registry.hpp"
-#include "router.hpp"
+#include <fut/exec/module_registry.hpp>
+#include <fut/exec/router.hpp>
+
+#include <fut/export.hpp>
 
 namespace fut::exec {
 
-class app_loader {
+class FUT_API app_loader {
 public:
     struct entry {
         std::filesystem::path dll{};

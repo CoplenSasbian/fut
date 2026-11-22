@@ -97,10 +97,11 @@ function(add_app name prefix)
     )
 
     target_include_directories(${target} PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/core/include
         ${CMAKE_CURRENT_SOURCE_DIR})
 
-    target_link_libraries(${target} PRIVATE Boost::asio glaze::glaze)
+    # An app is a DLL on top of the same core library the server links.
+    target_link_libraries(${target} PRIVATE fut::core Boost::asio glaze::glaze)
     if(WIN32)
         # Winsock: an app that touches asio's networking types (an injected
         # io_context, for instance) needs it at link time.

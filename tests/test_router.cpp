@@ -13,8 +13,8 @@
 #include <fut/http/router.hpp>
 #include <fut/json.hpp>
 
-#include "module_registry.hpp"
-#include "router.hpp"
+#include <fut/exec/module_registry.hpp>
+#include <fut/exec/router.hpp>
 
 namespace asio = boost::asio;
 

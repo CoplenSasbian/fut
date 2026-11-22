@@ -9,7 +9,7 @@
 
 #include <boost/asio.hpp>
 
-#include "router.hpp"
+#include <fut/exec/router.hpp>
 
 namespace fut::exec {
 

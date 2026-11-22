@@ -1,4 +1,4 @@
-#include "config.hpp"
+#include <fut/exec/config.hpp>
 
 #include <fstream>
 #include <iterator>

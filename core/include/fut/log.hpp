@@ -37,8 +37,11 @@
 #include <fut/detail/format.hpp>
 #include <fut/detail/path.hpp>
 
+// The log core lives in fut_core; FUT_LOG_API is its export surface.
+#include <fut/export.hpp>
+
 #ifndef FUT_LOG_API
-#  define FUT_LOG_API
+#  define FUT_LOG_API FUT_API
 #endif
 
 namespace fut::log {

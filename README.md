@@ -42,7 +42,7 @@ with Beast. So the message layer is:
 | Concern | Choice |
 | --- | --- |
 | Parsing | **llhttp** — the parser Node.js uses: small C library, incremental, fuzz-tested, handles Content-Length, chunked bodies, keep-alive semantics |
-| Serialization | `src/exec/http_message.cpp` — status line, framing headers, body (~40 lines) |
+| Serialization | `core/src/http_message.cpp` — status line, framing headers, body (~40 lines) |
 | I/O, coroutines, timers | Boost.Asio (unchanged) |
 
 ```
@@ -937,7 +937,7 @@ Neither the server executable nor the other app DLLs are rebuilt.
 * **cv-qualification**: the annotation *type* of a `constexpr` function's return value comes back
   cv-qualified — `type_of(ann) == ^^const http_action` — so verb detection filters on
   `^^const fut::http_action`. That single spot is the only place the quirk is visible.
-* **Member enumeration** utilities for DTO introspection: `include/fut/reflect.hpp`
+* **Member enumeration** utilities for DTO introspection: `core/include/fut/reflect.hpp`
   (`member_count_v`, `member_names_v`, `for_each_member`); HTTP demo at `GET /api/demo/info`.
 * **glaze** serializes aggregates via compile-time reflection — no field lists to maintain.
 
@@ -958,43 +958,49 @@ GCC 16.2 quirks the implementation works around:
 
 ## Project layout
 
+One directory per target, and the library owns every header:
+
 ```
 fut/
 ├── CMakeLists.txt / CMakePresets.json / vcpkg.json
-├── cmake/fut.cmake         the add_app(name, prefix, sources...) helper
-├── include/fut/
-│   ├── annotations.hpp     generic annotation queries (fut::ann::of / first / has)
-│   ├── inject.hpp          fut::inject: fill a namespace pointer from the ctx
-│   ├── log_inject.hpp      fut::log_group: a group_ref wired to the server's log
-│   ├── ctx.hpp             fut_ctx: module lookup, the server <-> module contract
-│   ├── scannable.hpp       "the scanner calls my operation()" (global)
-│   ├── scan.hpp            the generic namespace scanner (global, not HTTP)
-│   ├── app.hpp             generic app entry: scan + FUT_EXPORT_APP_NS
-│   ├── export.hpp          DLL ABI constants (FUT_EXPORT, abi_version)
-│   ├── http/
-│   │   ├── http.hpp        one include for the HTTP stack
-│   │   ├── route.hpp       request/response, method enum, path matching, join_path
-│   │   ├── error.hpp       fut::http_error + the named 4xx/5xx helpers
-│   │   ├── filter.hpp      fut::filter: register an app middleware by annotation
-│   │   ├── router.hpp      router_module: the interface a DLL registers through
-│   │   ├── bind.hpp        from_body / from_query / from_path / from_header /
-│   │   │                    from_form / from_file
-│   │   ├── form.hpp        urlencoded + multipart parsing, uploaded_file
-│   │   ├── invoke.hpp      argument binding, invoke, return adaptation
-│   │   └── annotate.hpp    http_action verbs + controller (the scannable annotation)
-│   ├── log.hpp             asynchronous logging (chains, sinks, reflection-based level names)
-│   ├── reflect.hpp         std::meta member utilities
-│   ├── json.hpp / url.hpp  glaze helpers / query parsing
-│   └── detail/             log format/path helpers
-├── src/exec/               server executable
-│   ├── module_registry.hpp modules by type + unique name (the fut_ctx backend)
-│   ├── http_parser.*       llhttp wrapper (incremental, one message, reports consumed bytes)
-│   ├── http_message.*      owned request message + response serialization
-│   └── builder/server/router/app_loader/config/log/main
-├── apps/demo/             the reference app: one DLL, every feature, split into modules
-└── tests/                  doctest suite (65 cases)
+├── cmake/fut.cmake          the add_app(name, prefix, sources...) helper
+├── core/                    fut_core -- the library (shared: libfut_core.dll)
+│   ├── CMakeLists.txt
+│   ├── include/fut/         every public header
+│   │   ├── ctx.hpp          fut_ctx: module lookup, the server <-> module contract
+│   │   ├── scannable.hpp    "the scanner calls my operation()" (global)
+│   │   ├── scan.hpp         the generic namespace scanner (global, not HTTP)
+│   │   ├── app.hpp          generic app entry: scan + FUT_EXPORT_APP_NS
+│   │   ├── annotations.hpp  generic annotation queries (fut::ann::of / first / has)
+│   │   ├── inject.hpp       fut::inject: fill a namespace pointer from the ctx
+│   │   ├── log.hpp          asynchronous logging (chains, sinks, levels)
+│   │   ├── log_inject.hpp   fut::log_group: a group_ref wired to the server's log
+│   │   ├── export.hpp       ABI constants + FUT_API (the core's export surface)
+│   │   ├── reflect.hpp      std::meta member utilities
+│   │   ├── json.hpp / url.hpp
+│   │   ├── exec/            server, router, app_loader, config, module_registry
+│   │   ├── http/            route, annotate, invoke, bind, form, filter, error
+│   │   └── detail/          log format/path helpers, annotation text buffers
+│   └── src/                 the implementation
+│       ├── log.cpp          the log core
+│       ├── router.cpp       registration, matching, middleware chains, dispatch
+│       ├── app_loader.cpp   LoadLibrary + fut_app_register + module lookup
+│       ├── config.cpp       config.json -> chains, with validation
+│       ├── server.cpp       the fut::exec::server object (configure + run)
+│       ├── listener.cpp     TCP accept/session loop
+│       └── http_parser.* / http_message.*   the llhttp message layer (private)
+├── exec/                    fut_server -- the thin shell
+│   ├── CMakeLists.txt
+│   └── main.cpp             argument parsing + server().run(); nothing else
+├── apps/demo/               the reference app: one DLL, every feature, split into modules
+└── tests/                   doctest suite (65 cases)
 ```
 
+**The core is a real library.** `fut_core` is a shared library: the executable links it and
+every app DLL links it too, so the log core, the router implementation and the module registry
+exist exactly once in the process. `fut_server` is only `exec/main.cpp`; an app is only its
+controllers and their definitions. The header-only parts (annotations, the scanner, the HTTP
+types) are in `core/include` with everything else the library publishes.
 ## Configuration (config.json)
 
 | Field | Default | Meaning |

@@ -30,11 +30,13 @@
 #include <fut/log.hpp>
 #include <typeinfo>
 
-#include "module_registry.hpp"
+#include <fut/exec/module_registry.hpp>
+
+#include <fut/export.hpp>
 
 namespace fut::exec {
 
-class server {
+class FUT_API server {
 public:
     server& config_file(std::filesystem::path p) { cfg_file_ = std::move(p); return *this; }
     server& host(std::string_view v) { host_ = std::string(v); return *this; }

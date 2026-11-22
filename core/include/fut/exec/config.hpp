@@ -75,13 +75,13 @@ struct config {
 // Reads a JSON config file; returns defaults when the file does not exist,
 // throws std::runtime_error when it cannot be parsed.
 
-config load_config(const std::filesystem::path& path);
+FUT_API config load_config(const std::filesystem::path& path);
 
 // Turns the logging section into chain options, validating every field.
 // Throws std::runtime_error naming the offending chain and the allowed
 // values, e.g.
 //   log.chains[1]: unknown formatter "xml" (expected "pattern" or "json")
 
-std::vector<fut::log::chain_options> build_log_chains(const log_config& cfg);
+FUT_API std::vector<fut::log::chain_options> build_log_chains(const log_config& cfg);
 
 } // namespace fut::exec
