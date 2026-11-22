@@ -182,7 +182,8 @@ apps/demo/
     ├── runtime.hpp  / .cpp      GET io/log/audit-group/error/{kind}
     ├── items.hpp    / .cpp      /items: hits, get, put, delete (stateful)
     ├── nested.hpp   / .cpp      a controller one namespace deeper
-    └── raw.hpp      / .cpp      three routes with no binding at all
+    ├── raw.hpp      / .cpp      three routes with no binding at all
+    └── stream.hpp   / .cpp      SSE and a chunked body
 ```
 
 **Declarations and definitions are split**, which is the layout to copy for a real app:
@@ -639,6 +640,65 @@ Two implementation notes:
 * an app middleware crosses the DLL boundary as a **function pointer** (`fut::http::middleware_hook`),
   not as a `std::function`: a callable constructed inside a DLL would otherwise be destroyed after
   the DLL is unloaded. The executable wraps the pointer in its own `std::function`.
+
+## Streaming and SSE
+
+A normal action returns a response and the server sends it whole. Streaming flips that: the action
+receives a `fut::stream&`, sends the head itself and then writes body pieces while the client is
+already reading.
+
+```cpp
+[[=fut::http_get("/events")]]
+asio::awaitable<void> events(fut::stream& out) {
+    fut::response head;
+    head.content_type = "text/event-stream";
+    head.headers.emplace_back("Cache-Control", "no-cache");
+    co_await out.begin(std::move(head));      // status + headers, body is chunked from here
+
+    for (int i = 0; i < 5; ++i) {
+        co_await out.send("tick", std::to_string(i));   // event: / data: framing
+        co_await out.sleep(std::chrono::milliseconds{20});
+    }
+}
+```
+
+| Call | What it does |
+| --- | --- |
+| `begin(head)` | status line + headers once; `Transfer-Encoding: chunked` |
+| `write(bytes)` | one body chunk, awaits the socket |
+| `line(text)` | a chunk ending in a newline |
+| `send(event, data)` | one SSE frame (`event:`/`data:`, multi-line data split) |
+| `comment(text)` | an SSE comment, the standard keep-alive on a quiet stream |
+| `sleep(ms)` | waits on the server's io_context |
+| `finish()` | the terminating chunk (the connection loop does it when the action returns) |
+| `started()` / `closed()` | whether the head went out / the client is gone |
+
+**Transport.** HTTP/1.1 chunked, so no `Content-Length` is needed and the connection stays
+keep-alive afterwards. `curl --raw` shows the framing: `8\r\nchunk-1\n\r\n…0\r\n\r\n`.
+
+**Backpressure** is the `co_await`: a slow client slows the producer down instead of growing a
+buffer. **Disconnects** surface as `fut::stream_error` from the next write — let it propagate and
+the connection loop stops the action; the router maps it to 499 internally.
+
+**Not streaming? Nothing changes.** An action may take `fut::stream&` and still return a normal
+response: if it never calls `begin()`, the server sends the returned response as usual. The
+stream travels on the request (`request::body_stream`), so `route_fn` and every existing action
+signature are unchanged.
+
+```bash
+curl -D- -o /dev/null http://127.0.0.1:8080/api/demo/events
+# HTTP/1.1 200 OK
+# Content-Type: text/event-stream
+# Transfer-Encoding: chunked
+# Cache-Control: no-cache
+
+curl http://127.0.0.1:8080/api/demo/events
+# event: tick
+# data: 0
+# ... five ticks, 20 ms apart
+```
+
+`apps/demo/routes/stream.*` is exactly this: `/events` (SSE) and `/stream` (plain chunks).
 
 ## Errors
 

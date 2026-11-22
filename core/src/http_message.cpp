@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <string>
 
 namespace fut::exec {
@@ -69,6 +70,39 @@ std::string serialize_response(
     serialize_response(out, status, content_type, extra_headers, body, keep_alive);
     return out;
 }
+
+void serialize_stream_head(std::string& out, unsigned status, std::string_view content_type,
+                           const std::vector<std::pair<std::string, std::string>>& extra_headers) {
+    out.clear();
+    out += "HTTP/1.1 ";
+    out += std::to_string(status);
+    out += ' ';
+    out += reason_phrase(status);
+    out += "\r\n";
+    out += "Content-Type: ";
+    out += content_type;
+    out += "\r\n";
+    out += "Transfer-Encoding: chunked\r\n";
+    for (const auto& [name, value] : extra_headers) {
+        out += name;
+        out += ": ";
+        out += value;
+        out += "\r\n";
+    }
+    out += "\r\n";
+}
+
+void append_chunk(std::string& out, std::string_view bytes) {
+    if (bytes.empty()) return;
+    char size[24];
+    std::snprintf(size, sizeof(size), "%zx", bytes.size());
+    out += size;
+    out += "\r\n";
+    out.append(bytes);
+    out += "\r\n";
+}
+
+void append_last_chunk(std::string& out) { out += "0\r\n\r\n"; }
 
 void serialize_response(std::string& out, unsigned status, std::string_view content_type,
                         const std::vector<std::pair<std::string, std::string>>& extra_headers,

@@ -66,4 +66,16 @@ void serialize_response(
     const std::vector<std::pair<std::string, std::string>>& extra_headers,
     std::string_view body, bool keep_alive);
 
+// The head of a streaming response: status line + headers with
+// "Transfer-Encoding: chunked" and no Content-Length. The chunks follow.
+void serialize_stream_head(
+    std::string& out, unsigned status, std::string_view content_type,
+    const std::vector<std::pair<std::string, std::string>>& extra_headers);
+
+// One chunk: the size in hex, CRLF, the bytes, CRLF.
+void append_chunk(std::string& out, std::string_view bytes);
+
+// The terminating chunk.
+void append_last_chunk(std::string& out);
+
 } // namespace fut::exec

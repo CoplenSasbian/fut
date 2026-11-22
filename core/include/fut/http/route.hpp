@@ -26,6 +26,8 @@
 
 namespace fut {
 
+class stream;   // fut/http/stream.hpp
+
 // ---------------------------------------------------------------------------
 // method -- the HTTP verb
 // ---------------------------------------------------------------------------
@@ -85,6 +87,10 @@ struct request {
     // Peer, "ip:port" (set by the server). Last so the other fields keep their
     // aggregate order.
     std::string_view remote{};
+
+    // Set by the server when the action may stream its body (see fut::stream).
+    // Null on a plain dispatch, where a streaming action is an error.
+    stream* body_stream = nullptr;
 
     // ---- headers (case-insensitive, as HTTP is) ----
     [[nodiscard]] std::string_view header(std::string_view name) const {

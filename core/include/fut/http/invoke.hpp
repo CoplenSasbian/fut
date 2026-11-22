@@ -27,6 +27,7 @@
 
 #include <fut/http/bind.hpp>
 #include <fut/http/form.hpp>
+#include <fut/http/stream.hpp>
 #include <fut/json.hpp>
 #include <fut/http/route.hpp>
 #include <fut/url.hpp>
@@ -144,6 +145,11 @@ decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm,
     if constexpr (std::is_same_v<Bare, ::fut::request>) {
         return static_cast<const ::fut::request&>(req);
     }
+    else if constexpr (std::is_same_v<Bare, ::fut::stream>) {
+        if (req.body_stream == nullptr)
+            throw ::fut::bind_error("no stream on this dispatch");
+        return static_cast<::fut::stream&>(*req.body_stream);
+    }
     else if constexpr (std::is_same_v<Bare, ::fut::path_match>) {
         return static_cast<const ::fut::path_match&>(pm);
     }
@@ -200,7 +206,7 @@ decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm,
                       "fut: this route parameter needs a binding annotation "
                       "(from_body / from_query / from_path / from_header / "
                       "from_form / from_file) or must be 'const fut::request&' / "
-                      "'const fut::path_match&'");
+                      "'const fut::path_match&' / 'fut::stream&'");
     }
 }
 
@@ -230,7 +236,13 @@ boost::asio::awaitable<::fut::response> invoke_impl(const ::fut::request& req,
     const ::fut::form_data* form = nullptr;
     if constexpr (wants_form) form = &*parsed_form;
 
-    if constexpr (std::is_same_v<Val, ::fut::response>) {
+    if constexpr (std::is_void_v<Val>) {
+        // A streaming action: it wrote through fut::stream. The placeholder is
+        // ignored when the stream was started.
+        co_await ([: F :])(make_arg<F, P>(req, pm, form)...);
+        co_return ::fut::response{};
+    }
+    else if constexpr (std::is_same_v<Val, ::fut::response>) {
         co_return co_await ([: F :])(make_arg<F, P>(req, pm, form)...);
     }
     else if constexpr (std::is_same_v<Val, std::string>) {
@@ -269,7 +281,8 @@ T& controller_instance() {
 
 template <class T, meta::info M, std::size_t... P>
 boost::asio::awaitable<::fut::response> invoke_member_impl(
-    const ::fut::request& req, const ::fut::path_match& pm, std::index_sequence<P...>) {
+    const ::fut::request& req, const ::fut::path_match& pm,
+    std::index_sequence<P...>) {
     using Raw = [: meta::return_type_of(M) :];
     static_assert(is_awaitable_v<Raw>,
                   "fut: a controller action must return asio::awaitable<T>");
@@ -282,7 +295,11 @@ boost::asio::awaitable<::fut::response> invoke_member_impl(
     if constexpr (wants_form) form = &*parsed_form;
 
     auto& self = controller_instance<T>();
-    if constexpr (std::is_same_v<Val, ::fut::response>) {
+    if constexpr (std::is_void_v<Val>) {
+        co_await (self.[: M :])(make_arg<M, P>(req, pm, form)...);
+        co_return ::fut::response{};
+    }
+    else if constexpr (std::is_same_v<Val, ::fut::response>) {
         co_return co_await (self.[: M :])(make_arg<M, P>(req, pm, form)...);
     }
     else if constexpr (std::is_same_v<Val, std::string>) {

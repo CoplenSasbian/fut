@@ -62,8 +62,44 @@ asio::awaitable<void> write_all(tcp::socket& socket, std::string_view data) {
 
 // Parsed message -> fut::request. The router owns matching, the middleware
 // chains and the error mapping (400/404/405/500).
+// A response that streams: the head is written once, every write() becomes one
+// chunk, and finish() writes the terminating chunk.
+class stream_binding {
+public:
+    stream_binding(tcp::socket& socket, std::string& out) : socket_(socket), out_(out) {}
+
+    fut::stream handle() {
+        return fut::stream{
+            [this](unsigned status, std::string_view content_type,
+                   const std::vector<std::pair<std::string, std::string>>& headers)
+                -> asio::awaitable<void> {
+                serialize_stream_head(out_, status, content_type, headers);
+                co_await write_all(socket_, out_);
+            },
+            [this](std::string_view bytes) -> asio::awaitable<void> {
+                out_.clear();
+                append_chunk(out_, bytes);
+                co_await write_all(socket_, out_);
+            },
+            [this]() -> asio::awaitable<void> {
+                out_.clear();
+                append_last_chunk(out_);
+                co_await write_all(socket_, out_);
+            },
+            [](std::chrono::milliseconds delay) -> asio::awaitable<void> {
+                asio::steady_timer timer{co_await asio::this_coro::executor};
+                timer.expires_after(delay);
+                co_await timer.async_wait(asio::use_awaitable);
+            }};
+    }
+
+private:
+    tcp::socket& socket_;
+    std::string& out_;
+};
+
 asio::awaitable<fut::response> dispatch(router* rt, const http_request_message& msg,
-                                       std::string_view remote) {
+                                       std::string_view remote, fut::stream& out) {
     const std::string_view target = msg.target;
     const auto qpos = target.find('?');
     const std::string_view path =
@@ -74,7 +110,8 @@ asio::awaitable<fut::response> dispatch(router* rt, const http_request_message& 
     // The message already stores its headers as views into its own buffer, so
     // the request spans that list directly -- no per-request copy at all.
     co_return co_await rt->dispatch(fut::request{msg.method, target, path, query, msg.body,
-                                                 msg.header_span(), remote});
+                                                 msg.header_span(), remote},
+                                    out);
 }
 
 asio::awaitable<void> run_session(tcp::socket socket, router* rt,
@@ -98,6 +135,7 @@ asio::awaitable<void> run_session(tcp::socket socket, router* rt,
     // Reused across the requests of this connection: the serialized response.
     std::string out;
     out.reserve(1024);
+    stream_binding binding{socket, out};
 
     for (;;) {
         // 1) Parse everything already buffered (pipelined requests too).
@@ -128,10 +166,23 @@ asio::awaitable<void> run_session(tcp::socket socket, router* rt,
                 }
 
                 const bool keep_alive = msg.keep_alive;
-                const fut::response res = co_await dispatch(rt, msg, remote);
-                serialize_response(out, res.status, res.content_type, res.headers, res.body,
-                                   keep_alive);
-                co_await write_all(socket, out);
+                fut::stream stream = binding.handle();
+                fut::response res;
+                try {
+                    res = co_await dispatch(rt, msg, remote, stream);
+                } catch (...) {
+                    // A stream_error means the client is gone; anything else is
+                    // already mapped into a response by the router.
+                    if (!stream.started()) throw;
+                }
+
+                if (stream.started()) {
+                    co_await stream.finish();
+                } else {
+                    serialize_response(out, res.status, res.content_type, res.headers, res.body,
+                                       keep_alive);
+                    co_await write_all(socket, out);
+                }
                 if (!keep_alive) co_return;
                 parser.reset();
                 break;

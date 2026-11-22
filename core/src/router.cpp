@@ -103,20 +103,16 @@ void router::finalize() {
 
         const fut::http::route_fn raw = e.invoke;
         if (chain.empty()) {
-            e.handler = [raw](const fut::request& req,
-                              const fut::path_match& params) -> asio::awaitable<fut::response> {
-                co_return co_await raw(req, params);
-            };
+            e.handler = [raw](const fut::request& req, const fut::path_match& params)
+                -> asio::awaitable<fut::response> { co_return co_await raw(req, params); };
             continue;
         }
 
         e.handler = [chain = std::move(chain), raw](const fut::request& req,
                                                     const fut::path_match& params)
             -> asio::awaitable<fut::response> {
-            terminal_fn terminal = [raw](const fut::request& r,
-                                         const fut::path_match& p) -> asio::awaitable<fut::response> {
-                co_return co_await raw(r, p);
-            };
+            terminal_fn terminal = [raw](const fut::request& r, const fut::path_match& p)
+                -> asio::awaitable<fut::response> { co_return co_await raw(r, p); };
             co_return co_await run_chain(chain, 0, terminal, req, params);
         };
     }
@@ -185,15 +181,17 @@ asio::awaitable<fut::response> router::dispatch_chain(const fut::request& req) c
 
 // The one place where errors become responses: an action, a middleware or a
 // binding may throw; every app therefore reports failures the same way.
-asio::awaitable<fut::response> router::dispatch(const fut::request& req) const {
+asio::awaitable<fut::response> router::dispatch_with(const fut::request& req) const {
     try {
         co_return co_await dispatch_chain(req);
+    } catch (const fut::stream_error&) {
+        // The client went away mid-stream: nothing left to answer.
+        co_return fut::response{499, "text/plain", {}};
     } catch (const fut::http_error& e) {
         co_return make_error(e.status(), e.what());
     } catch (const fut::bind_error& e) {
         co_return make_error(400, e.what());
     } catch (const std::exception& e) {
-        // 500: the detail is for the operator, not for the client.
         router_log.error("unhandled exception on {} {}: {}", std::string(req.method),
                          std::string(req.target), e.what());
         co_return make_error(500, "internal server error");
@@ -202,6 +200,18 @@ asio::awaitable<fut::response> router::dispatch(const fut::request& req) const {
                          std::string(req.target));
         co_return make_error(500, "internal server error");
     }
+}
+
+asio::awaitable<fut::response> router::dispatch(const fut::request& req,
+                                               fut::stream& out) const {
+    // A copy: the stream pointer is per call, the rest is borrowed anyway.
+    fut::request with_stream = req;
+    with_stream.body_stream = &out;
+    co_return co_await dispatch_with(with_stream);
+}
+
+asio::awaitable<fut::response> router::dispatch(const fut::request& req) const {
+    co_return co_await dispatch_with(req);
 }
 
 } // namespace fut::exec

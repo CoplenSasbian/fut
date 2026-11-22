@@ -30,5 +30,6 @@
 #include "routes/items.hpp"
 #include "routes/nested.hpp"
 #include "routes/raw.hpp"
+#include "routes/stream.hpp"
 
 #include "routes.hpp"

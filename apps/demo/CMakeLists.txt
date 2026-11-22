@@ -17,4 +17,5 @@ add_app(demo /api/demo
     routes/items.cpp
     routes/nested.cpp
     routes/raw.cpp
+    routes/stream.cpp
 )

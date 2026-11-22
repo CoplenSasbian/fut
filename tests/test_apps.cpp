@@ -135,7 +135,7 @@ TEST_CASE("load fut_app_demo and drive its routes") {
     const auto* demo_app = find_app(apps, "demo");
     REQUIRE(demo_app != nullptr);
     CHECK(demo_app->prefix == "/api/demo");
-    CHECK(demo_app->routes == 25);   // 17 main + 4 items + 1 nested + 3 binding-free
+    CHECK(demo_app->routes == 27);   // 20 main + 4 items + 1 nested + 3 binding-free
 
     SUBCASE("GET /ping -- a DTO becomes JSON") {
         struct pong {
@@ -168,7 +168,7 @@ TEST_CASE("load fut_app_demo and drive its routes") {
         CHECK(v->name == "demo");
         CHECK(v->prefix == "/api/demo");
         CHECK(v->abi == fut::abi_version);
-        CHECK(v->routes.size() == 25);
+        CHECK(v->routes.size() == 27);
         bool found_put = false;
         for (const auto& r : v->routes)
             if (r.method == "PUT" && r.path == "/api/demo/items/{id}") found_put = true;
@@ -503,6 +503,59 @@ TEST_CASE("load fut_app_demo and drive its routes") {
         CHECK(has_header(res, "X-Demo-Created", "1"));
         CHECK(has_header(res, "Set-Cookie"));
         CHECK(res.body.find("created") != std::string::npos);
+    }
+
+    SUBCASE("streaming: SSE frames arrive one chunk at a time") {
+        std::string head_type, body, finished;
+        fut::stream s{
+            [&](unsigned, std::string_view ct, const auto&) -> asio::awaitable<void> {
+                head_type.assign(ct);
+                co_return;
+            },
+            [&](std::string_view bytes) -> asio::awaitable<void> {
+                body.append(bytes);
+                co_return;
+            },
+            [&]() -> asio::awaitable<void> {
+                finished = "yes";
+                co_return;
+            },
+            [](std::chrono::milliseconds) -> asio::awaitable<void> { co_return; }};
+
+        fut::request req{"GET", "/api/demo/events", "/api/demo/events", {}, {}, {}};
+        ioc.restart();
+        asio::co_spawn(ioc, [&]() -> asio::awaitable<void> {
+            co_await rt.dispatch(req, s);
+            co_await s.finish();
+        }, asio::detached);
+        ioc.run();
+
+        CHECK(s.started());
+        CHECK(head_type == "text/event-stream");
+        CHECK(body.find("event: tick\ndata: 0\n\n") != std::string::npos);
+        CHECK(body.find("event: tick\ndata: 4\n\n") != std::string::npos);
+        CHECK(finished == "yes");
+    }
+
+    SUBCASE("streaming: a plain chunked body") {
+        std::string body;
+        fut::stream s{
+            [](unsigned, std::string_view, const auto&) -> asio::awaitable<void> { co_return; },
+            [&](std::string_view bytes) -> asio::awaitable<void> {
+                body.append(bytes);
+                co_return;
+            },
+            []() -> asio::awaitable<void> { co_return; },
+            [](std::chrono::milliseconds) -> asio::awaitable<void> { co_return; }};
+
+        fut::request req{"GET", "/api/demo/stream", "/api/demo/stream", {}, {}, {}};
+        ioc.restart();
+        asio::co_spawn(ioc, [&]() -> asio::awaitable<void> {
+            co_await rt.dispatch(req, s);
+        }, asio::detached);
+        ioc.run();
+
+        CHECK(body == "chunk-0\nchunk-1\nchunk-2\n");
     }
 
     SUBCASE("app middleware filters /secure and stamps what comes back") {

@@ -8,6 +8,7 @@
 #include "routes/items.hpp"
 #include "routes/nested.hpp"
 #include "routes/raw.hpp"
+#include "routes/stream.hpp"
 #include "routes/runtime.hpp"
 
 namespace demo {
@@ -20,6 +21,7 @@ std::vector<route_entry> all_routes() {
     collect<items_controller>(out, "/items");
     collect<nested::nested_controller>(out, "/nested");
     collect<raw_controller>(out, "/raw");
+    collect<stream_controller>(out, "");
     return out;
 }
 
