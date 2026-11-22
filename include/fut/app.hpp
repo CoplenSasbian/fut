@@ -28,6 +28,7 @@
 #include <fut/annotations.hpp>
 #include <fut/ctx.hpp>
 #include <fut/inject.hpp>
+#include <fut/log_inject.hpp>
 #include <fut/export.hpp>
 #include <fut/scannable.hpp>
 #include <fut/scan.hpp>

@@ -66,6 +66,9 @@ namespace demo_actions {
 // injected while the namespace is scanned: the pointee type is the key
 [[=fut::inject{}]] boost::asio::io_context* g_io = nullptr;
 
+// a group bound to whatever service the context publishes
+[[=fut::log_group{}]] fut::log::group_ref app_log;
+
 struct [[=fut::controller{}]] main_controller {
     [[=fut::http_get("/ping")]]
     asio::awaitable<ping_dto> ping() { co_return ping_dto{}; }
@@ -194,6 +197,7 @@ struct harness {
     sink s{};
     fut::fut_ctx ctx{};
     asio::io_context ioc{};   // what the "io" module points at
+    fut::log::service log_service{};   // the "log" module
 
     explicit harness(std::string_view prefix) : prefix_storage(prefix) {
         ctx.host = this;
@@ -204,8 +208,12 @@ struct harness {
             harness* self = static_cast<harness*>(c->host);
             const bool router_type = type == typeid(fut::http::router_module).name();
             const bool io_type = type == typeid(asio::io_context).name();
-            if (!type.empty() && !router_type && !io_type)
+            const bool log_type = type == typeid(fut::log::service).name();
+            if (!type.empty() && !router_type && !io_type && !log_type)
                 return {nullptr, fut::module_status::wrong_type};
+
+            if (log_type || name == "log")
+                return {&self->log_service, fut::module_status::found};
 
             if (io_type || name == "io")
                 return {&self->ioc, fut::module_status::found};
@@ -347,6 +355,12 @@ TEST_CASE("a namespace variable is injected from the context") {
     // the scanner assigned the pointer while it walked the namespace
     REQUIRE(demo_actions::g_io != nullptr);
     CHECK(demo_actions::g_io == &h.ioc);
+}
+
+TEST_CASE("fut::log_group builds an app-scoped group_ref") {
+    harness h{"/api/demo"};
+    CHECK(demo_actions::app_log.name() == "demo.app_log");   // app name + identifier
+    CHECK(demo_actions::app_log.sink() == &h.log_service);   // wired to the service
 }
 
 TEST_CASE("the scan does not recurse into classes") {

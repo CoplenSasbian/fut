@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -32,6 +33,23 @@ namespace asio = boost::asio;
 
 namespace fut::exec {
 namespace {
+// What an app's group_ref calls. It goes straight into this module's log core,
+// so app lines share the chains, level filter and formatting with ours.
+void app_log_write(void*, fut::log::level severity, std::string_view group,
+                   std::string_view message, std::string_view file,
+                   std::string_view function, std::uint32_t line,
+                   std::uint32_t column) {
+    if (static_cast<std::int32_t>(severity) < static_cast<std::int32_t>(fut::log::current_level()))
+        return;
+    fut::log::submit(
+        severity, group, message, file, function, line, column,
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count(),
+        static_cast<std::uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id())));
+}
+
+const fut::log::service app_log_service{nullptr, &app_log_write};
 
 // Directory of the running executable (for resolving a relative apps_dir).
 std::filesystem::path exe_dir() {
@@ -184,6 +202,8 @@ int server::run() {
         // The io_context is a service too: an app may want to post work or
         // start a timer on the server's event loop.
         modules_.add("io", typeid(asio::io_context).name(), &ioc);
+        modules_.add("log", typeid(fut::log::service).name(),
+                     const_cast<fut::log::service*>(&app_log_service));
 
         // App DLLs register themselves into the router through the context.
         // Anything the embedder published with add_module() travels with it.

@@ -62,9 +62,9 @@ struct echo_out {
 
 struct info_dto {
     std::string app{"admin"};
-    std::vector<std::string> routes{"/ping",    "/info",  "/meta",   "/echo", "/formecho",
-                                    "/whoami",  "/raw",   "/upload", "/fail/{code}",
-                                    "/io",      "/users/hits", "/users/{id}/name"};
+    std::vector<std::string> routes{"/ping",   "/info",   "/meta",    "/echo", "/formecho",
+                                    "/whoami", "/raw",    "/upload",  "/fail/{code}",
+                                    "/io",     "/log",    "/users/hits", "/users/{id}/name"};
 };
 
 struct whoami_dto {
@@ -90,10 +90,19 @@ namespace admin {
 // module key, so this points at the server's own io_context.
 [[=fut::inject{}]] boost::asio::io_context* g_io = nullptr;
 
+// A log group wired to the server's chains: name "admin.log".
+[[=fut::log_group{}]] fut::log::group_ref log;
+
 struct io_dto {
     bool injected{false};
     bool timer_fired{false};
 };
+
+struct log_dto {
+    bool logged{false};
+    std::string group{};
+};
+
 
 // ---- app-scoped middleware -------------------------------------------------
 //
@@ -188,6 +197,15 @@ struct [[=fut::controller{}]] admin_controller {
         timer.expires_after(std::chrono::milliseconds(1));
         co_await timer.async_wait(asio::use_awaitable);
         co_return io_dto{true, true};
+    }
+
+    // Logging through the injected group: the line lands in the server's chains
+    // with the group name the scanner gave us.
+    [[=fut::http_get("/log")]]
+    asio::awaitable<log_dto> write_log() {
+        log.info("admin /log was called");
+        log.warning("and this one is a warning");
+        co_return log_dto{true, std::string(log.name())};
     }
 
     // Errors: throwing is the way out. The router maps fut::http_error to its

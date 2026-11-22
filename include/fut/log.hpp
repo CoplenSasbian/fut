@@ -211,9 +211,9 @@ void critical(fut::detail::location_fmt_string<Args...> pattern, Args&&... args)
     write(level::critical, {}, pattern, std::forward<Args>(args)...);
 }
 
-/// A named category that prefixes every call without touching the global
-/// functions:  constexpr auto net = fut::log::grp("net");  net.info("...");
-struct group_ref {
+/// A named category in this module:  constexpr auto net = fut::log::grp("net");
+/// net.info("...");  It writes straight into this module's log core.
+struct group {
     std::string_view name;
 
     template <class... Args>
@@ -247,8 +247,81 @@ struct group_ref {
     }
 };
 
-inline constexpr group_ref grp(std::string_view name) noexcept { return group_ref{name}; }
+inline constexpr group grp(std::string_view name) noexcept { return group{name}; }
 
-inline constexpr group_ref core_log = grp("core");
+inline constexpr group core_log = grp("core");
+
+// ---- logging across the DLL boundary ---------------------------------------
+//
+// An app DLL cannot call fut::log::submit: that is the executable's log core.
+// Instead the executable publishes a service, and the app holds a group_ref
+// bound to it -- one pointer, no logging state of its own, and every line still
+// travels through the server's chains.
+struct service {
+    void* self = nullptr;
+    void (*write)(void* self, level severity, std::string_view group,
+                  std::string_view message, std::string_view file,
+                  std::string_view function, std::uint32_t line,
+                  std::uint32_t column) = nullptr;
+};
+
+/// A reference to a group, bound to a service. This is what fut::log_group
+/// injects into an app; its methods are header-only on purpose, so a DLL never
+/// has to link the log core.
+class group_ref {
+public:
+    group_ref() = default;
+
+    group_ref(std::string name, const service* sink)
+        : name_(std::move(name)), sink_(sink) {}
+
+    [[nodiscard]] std::string_view name() const noexcept { return name_; }
+    [[nodiscard]] const service* sink() const noexcept { return sink_; }
+
+    template <class... Args>
+    void trace(fut::detail::location_fmt_string<Args...> pattern, Args&&... args) const {
+        emit(level::trace, pattern, std::forward<Args>(args)...);
+    }
+
+    template <class... Args>
+    void debug(fut::detail::location_fmt_string<Args...> pattern, Args&&... args) const {
+        emit(level::debug, pattern, std::forward<Args>(args)...);
+    }
+
+    template <class... Args>
+    void info(fut::detail::location_fmt_string<Args...> pattern, Args&&... args) const {
+        emit(level::info, pattern, std::forward<Args>(args)...);
+    }
+
+    template <class... Args>
+    void warning(fut::detail::location_fmt_string<Args...> pattern, Args&&... args) const {
+        emit(level::warning, pattern, std::forward<Args>(args)...);
+    }
+
+    template <class... Args>
+    void error(fut::detail::location_fmt_string<Args...> pattern, Args&&... args) const {
+        emit(level::error, pattern, std::forward<Args>(args)...);
+    }
+
+    template <class... Args>
+    void critical(fut::detail::location_fmt_string<Args...> pattern, Args&&... args) const {
+        emit(level::critical, pattern, std::forward<Args>(args)...);
+    }
+
+private:
+    template <class... Args>
+    void emit(level severity, fut::detail::location_fmt_string<Args...> pattern,
+              Args&&... args) const {
+        if (sink_ == nullptr || sink_->write == nullptr) return;
+        sink_->write(sink_->self, severity, name_,
+                     pattern.format(std::forward<Args>(args)...),
+                     fut::detail::relative_path(pattern.location.file_name()),
+                     fut::detail::short_function_name(pattern.location.function_name()),
+                     pattern.location.line(), pattern.location.column());
+    }
+
+    std::string name_{};
+    const service* sink_ = nullptr;
+};
 
 }  // namespace fut::log

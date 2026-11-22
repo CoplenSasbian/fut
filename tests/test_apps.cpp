@@ -13,6 +13,7 @@
 
 #include <fut/http/route.hpp>
 #include <fut/json.hpp>
+#include <fut/log.hpp>
 
 #include "app_loader.hpp"
 #include "module_registry.hpp"
@@ -58,6 +59,32 @@ fut::response run(asio::io_context& ioc, fut::exec::router& rt, fut::method m,
     return st.res;
 }
 
+// Captures what an app logs, so the test can prove the line arrived with the
+// group and level the app chose.
+struct logged_line {
+    fut::log::level severity{fut::log::level::info};
+    std::string group{};
+    std::string message{};
+};
+
+std::vector<logged_line>& captured() {
+    static std::vector<logged_line> lines;
+    return lines;
+}
+
+void capture(void*, fut::log::level severity, std::string_view group,
+             std::string_view message, std::string_view, std::string_view,
+             std::uint32_t, std::uint32_t) {
+    captured().push_back({severity, std::string(group), std::string(message)});
+}
+
+constexpr bool contains(const std::vector<logged_line>& lines, std::string_view group,
+                        std::string_view message) {
+    for (const auto& line : lines)
+        if (line.group == group && line.message == message) return true;
+    return false;
+}
+
 bool has_header(const fut::response& res, std::string_view name, std::string_view value) {
     for (const auto& [k, v] : res.headers)
         if (k == name && v == value) return true;
@@ -86,6 +113,10 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
     fut::exec::router rt;
     fut::exec::module_registry modules;
     modules.add("io", typeid(asio::io_context).name(), &ioc);
+    // registry stores void*; the service object itself is const by design
+    static const fut::log::service log_service{nullptr, &capture};
+    modules.add("log", typeid(fut::log::service).name(),
+                const_cast<fut::log::service*>(&log_service));
     const auto apps = loader.load_dir(dir, rt, modules);
     REQUIRE(apps.size() == 2);
 
@@ -106,7 +137,7 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
     REQUIRE(web != nullptr);
     CHECK(admin->prefix == "/api/admin");
     CHECK(web->prefix == "/api/web");
-    CHECK(admin->routes == 12);  // 10 flat + 2 inside users_controller
+    CHECK(admin->routes == 13);  // 11 flat + 2 inside users_controller
     CHECK(web->routes == 7);    // 6 flat + 1 inside web::beta
 
     SUBCASE("admin /ping") {
@@ -285,6 +316,24 @@ TEST_CASE("load fut_app_admin / fut_app_web and drive their routes") {
         CHECK(res.status == 200);
         CHECK(res.content_type.rfind("text/plain", 0) == 0);
         CHECK(res.body == "from namespace web::beta");
+    }
+
+    SUBCASE("admin /log -- the injected group writes into the server's chains") {
+        captured().clear();
+        struct log_dto {
+            bool logged{};
+            std::string group{};
+        };
+        const auto res = run(ioc, rt, fut::method::GET, "/api/admin/log");
+        CHECK(res.status == 200);
+        const auto v = fut::parse<log_dto>(res.body);
+        REQUIRE(v.has_value());
+        CHECK(v->logged);
+        CHECK(v->group == "admin.log");
+
+        REQUIRE(!captured().empty());
+        CHECK(contains(captured(), "admin.log", "admin /log was called"));
+        CHECK(contains(captured(), "admin.log", "and this one is a warning"));
     }
 
     SUBCASE("admin /io -- the injected io_context is the live server loop") {

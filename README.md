@@ -583,6 +583,39 @@ type is the lookup key. Pointers only: a reference has to be bound at its declar
 moment the scanner does not control. A missing or ambiguous module makes registration fail loudly
 instead of leaving a null behind.
 
+### Logging from an app
+
+An app DLL cannot call `fut::log::submit` — that is the executable's log core — so it holds a
+`fut::log::group_ref` wired to a service the server publishes:
+
+```cpp
+namespace admin {
+[[=fut::log_group{}]] fut::log::group_ref log;   // group "admin.log"
+}
+
+[[=fut::http_get("/log")]]
+asio::awaitable<log_dto> write_log() {
+    log.info("admin /log was called");            // lands in the server's chains
+    co_return log_dto{true, std::string(log.name())};
+}
+```
+
+```bash
+curl -s http://127.0.0.1:8080/api/admin/log
+# {"logged":true,"group":"admin.log"}
+# console: 2026-11-22 16:06:40 [INFO    ] admin.log    admin /log was called
+```
+
+The name is the **app name plus the variable's identifier**, so two apps can both have a `log`
+without colliding. The sink is the server's log service, so app lines share the chains, level
+filter and formatters with the server's own — no second logging system in the DLL. `group_ref` is
+header-only and only calls the service pointer; with no service published every call is a no-op,
+which is what a unit test wants.
+
+Two types, on purpose: `fut::log::group` (what `fut::log::grp()` returns) writes straight into
+this module's core and is for the executable; `fut::log::group_ref` is the service-backed form that
+crosses the DLL boundary.
+
 Two lifetime rules, both enforced by tests:
 
 * the `app_loader` must be declared **before** the router and the io_context, so the DLLs are
@@ -853,6 +886,7 @@ fut/
 ├── include/fut/
 │   ├── annotations.hpp     generic annotation queries (fut::ann::of / first / has)
 │   ├── inject.hpp          fut::inject: fill a namespace pointer from the ctx
+│   ├── log_inject.hpp      fut::log_group: a group_ref wired to the server's log
 │   ├── ctx.hpp             fut_ctx: module lookup, the server <-> module contract
 │   ├── scannable.hpp       "the scanner calls my operation()" (global)
 │   ├── scan.hpp            the generic namespace scanner (global, not HTTP)
@@ -878,7 +912,7 @@ fut/
 │   ├── http_message.*      owned request message + response serialization
 │   └── builder/server/router/app_loader/config/log/main
 ├── apps/admin | apps/web   sample apps (controller style)
-└── tests/                  doctest suite (63 cases)
+└── tests/                  doctest suite (64 cases)
 ```
 
 ## Configuration (config.json)
@@ -896,7 +930,7 @@ fut/
 ## Tests
 
 ```bash
-ctest --preset release   # 63 cases
+ctest --preset release   # 64 cases
 ```
 
 * `test_router` — registration, app bookkeeping, full-path matching, literal-over-placeholder
