@@ -7,3 +7,8 @@ build/
 .idea/
 logs/
 cmake-build-*/
+
+# Machine-local build presets: the tracked template is CMakePresets.example.json.
+# Copy it, fill in your toolchain, and it stays out of the repository.
+/CMakePresets.json
+/CMakeUserPresets.json

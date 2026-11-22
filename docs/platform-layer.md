@@ -99,7 +99,7 @@ usually break a port, and the guard below keeps the result from drifting.
 | no `-pthread` on POSIX | `core/CMakeLists.txt` | `find_package(Threads)` + `Threads::Threads` linked **PUBLIC** from `fut_core`, so every executable and app library inherits it |
 | `LoadLibraryA` / `dlopen` split in the loader | `app_loader.cpp` | the platform layer (this document) |
 | `/proc/self/exe` only | `server.cpp` | `platform::executable_path()` with a macOS branch |
-| MinGW-only configure presets | `CMakePresets.json` | `linux` and `linux-debug` presets (GCC, `x64-linux`) next to the MinGW ones |
+| MinGW-only configure presets | build presets | `CMakePresets.example.json` carries a `linux` and a `linux-debug` family next to the MinGW ones, and the presets file itself is machine-local (ignored, copied from the template), so no one's toolchain path is committed |
 
 Checked and already portable:
 

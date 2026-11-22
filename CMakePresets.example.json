@@ -9,21 +9,16 @@
     {
       "name": "base",
       "hidden": true,
+      "displayName": "toolchain + vcpkg (edit the two cache variables below)",
       "generator": "Ninja",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-      "environment": {
-        "PATH": "$env{MINGW_ROOT}/bin;$penv{PATH}"
-      },
       "cacheVariables": {
-        "CMAKE_C_COMPILER": "$env{MINGW_ROOT}/bin/gcc.exe",
-        "CMAKE_CXX_COMPILER": "$env{MINGW_ROOT}/bin/g++.exe",
         "VCPKG_TARGET_TRIPLET": "x64-mingw-dynamic"
       }
     },
     {
       "name": "debug",
       "inherits": "base",
-      "displayName": "MinGW GCC + vcpkg x64-mingw-dynamic (Debug)",
       "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug"
@@ -32,7 +27,6 @@
     {
       "name": "release",
       "inherits": "base",
-      "displayName": "MinGW GCC + vcpkg x64-mingw-dynamic (Release)",
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
@@ -41,23 +35,24 @@
     {
       "name": "linux-base",
       "hidden": true,
+      "displayName": "GCC + vcpkg x64-linux",
       "generator": "Ninja",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
         "VCPKG_TARGET_TRIPLET": "x64-linux"
       }
     },
     {
       "name": "linux",
       "inherits": "linux-base",
-      "displayName": "GCC + vcpkg x64-linux (Release)",
-      "binaryDir": "${sourceDir}/build/linux"
+      "binaryDir": "${sourceDir}/build/linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     },
     {
       "name": "linux-debug",
       "inherits": "linux-base",
-      "displayName": "GCC + vcpkg x64-linux (Debug)",
       "binaryDir": "${sourceDir}/build/linux-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug"

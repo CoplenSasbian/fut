@@ -90,62 +90,45 @@ provide `std::meta`; the public headers `#error` as a second line of defense.
 
 ## Getting started
 
-Set two environment variables (adjust to your machine):
-
 ```bash
-export MINGW_ROOT=/d/mingw64        # GCC 15+ toolchain root
-export VCPKG_ROOT=/d/vcpkg/vcpkg    # a vcpkg checkout
+git clone ... fut && cd fut
+cp CMakePresets.example.json CMakePresets.json     # your machine's presets (not in git)
+$EDITOR CMakePresets.json                          # set the compiler/triplet for your box
+export VCPKG_ROOT=/path/to/vcpkg                   # a vcpkg checkout
+cmake --preset release && cmake --build --preset release && ctest --preset release
 ```
 
-Build and test:
+**The presets file is machine-local.** `CMakePresets.example.json` is the tracked template;
+`CMakePresets.json` and `CMakeUserPresets.json` are ignored, so nobody's compiler path, triplet or
+SDK location ends up in the repository. The template carries both families:
 
-```bash
-cmake --preset release
-cmake --build --preset release
-ctest --preset release
+| Preset | Toolchain | Triplet |
+| --- | --- | --- |
+| `release` / `debug` | MinGW GCC (`MINGW_ROOT`) | `x64-mingw-dynamic` |
+| `linux` / `linux-debug` | system GCC | `x64-linux` |
+
+On Windows the template reads `MINGW_ROOT` (and puts its `bin` on `PATH`); on Linux the system
+compiler is used as-is. Anything personal -- an extra preset, a different vcpkg cache, a debug
+shell -- goes into `CMakeUserPresets.json`, which can `inherits` from a preset in the local file:
+
+```json
+{
+  "version": 6,
+  "configurePresets": [
+    { "name": "mine", "inherits": "release", "binaryDir": "${sourceDir}/out/mine" }
+  ]
+}
 ```
 
-**In an IDE** (CLion, VS Code, ...) select a project preset — `CMakePresets.json` already carries
-the compiler, Ninja and `VCPKG_TARGET_TRIPLET=x64-mingw-dynamic`, which is the part that is easy to
-get wrong. Configuring by hand is of course supported; then just pass the same two values your
-preset would:
+**Configuring by hand** is supported; pass what the preset would:
 
 ```
 -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake
--DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic
+-DVCPKG_TARGET_TRIPLET=x64-mingw-dynamic     # or x64-linux
 ```
 
 (The triplet must match the compiler ABI: mixing MinGW with MSVC-built vcpkg packages fails at link
 time with `undefined reference to 'fprintf'` / `_RTC_InitBase` / `__chkstk`.)
-
-Run (from the repository root, which holds `config.json`):
-
-```bash
-./build/release/bin/fut_server.exe          # or: --port 9000 --threads 4 --log-level debug
-```
-
-Artifacts (`build/<preset>/bin`, self-contained — runtime DLLs included):
-
-```
-bin/
-├── fut_server.exe
-├── libstdc++-6.dll  libgcc_s_seh-1.dll  libwinpthread-1.dll
-├── test_*.exe
-└── apps/
-    └── fut_app_demo.dll
-```
-
-```bash
-curl http://127.0.0.1:8080/api/core/status
-curl http://127.0.0.1:8080/api/demo/ping                  # {"pong":true,"app":"demo"}
-curl "http://127.0.0.1:8080/api/demo/query?name=yue&count=4"   # {"message":"yue!","doubled":8,"sum":10}
-curl -X POST -d '{"message":"hi","count":4}' http://127.0.0.1:8080/api/demo/body
-curl -X PUT  -d '{"name":"widget","quantity":3}' http://127.0.0.1:8080/api/demo/items/7
-curl -X DELETE -w '%{http_code}\n' http://127.0.0.1:8080/api/demo/items/9   # 204
-curl http://127.0.0.1:8080/api/demo/info                  # the reflected route list
-curl http://127.0.0.1:8080/api/demo/text                  # plain text, text/plain
-```
-
 ## How an app is loaded
 
 ```
