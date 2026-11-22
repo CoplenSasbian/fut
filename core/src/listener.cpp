@@ -62,7 +62,8 @@ asio::awaitable<void> write_all(tcp::socket& socket, std::string_view data) {
 
 // Parsed message -> fut::request. The router owns matching, the middleware
 // chains and the error mapping (400/404/405/500).
-asio::awaitable<fut::response> dispatch(router* rt, const http_request_message& msg) {
+asio::awaitable<fut::response> dispatch(router* rt, const http_request_message& msg,
+                                       std::string remote) {
     const std::string_view target = msg.target;
     const auto qpos = target.find('?');
     const std::string_view path =
@@ -75,11 +76,21 @@ asio::awaitable<fut::response> dispatch(router* rt, const http_request_message& 
     for (const auto& [name, value] : msg.headers) headers.emplace_back(name, value);
 
     co_return co_await rt->dispatch(fut::request{msg.method, target, path, query, msg.body,
-                                                 headers});
+                                                 headers, remote});
 }
 
 asio::awaitable<void> run_session(tcp::socket socket, router* rt,
                                   std::chrono::seconds timeout) {
+    // "ip:port" of the peer, kept for the whole session so the request can
+    // carry a stable view.
+    std::string remote;
+    try {
+        const auto endpoint = socket.remote_endpoint();
+        remote = endpoint.address().to_string() + ":" + std::to_string(endpoint.port());
+    } catch (const std::system_error&) {
+        remote = "<unknown>";
+    }
+
     request_parser parser;
 
     std::string buffer;          // bytes received but not yet parsed
@@ -115,7 +126,7 @@ asio::awaitable<void> run_session(tcp::socket socket, router* rt,
                 }
 
                 const bool keep_alive = msg.keep_alive;
-                const fut::response res = co_await dispatch(rt, msg);
+                const fut::response res = co_await dispatch(rt, msg, remote);
                 co_await write_all(socket,
                                    serialize_response(res.status, res.content_type, res.headers,
                                                       res.body, keep_alive));

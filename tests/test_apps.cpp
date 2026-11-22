@@ -135,7 +135,7 @@ TEST_CASE("load fut_app_demo and drive its routes") {
     const auto* demo_app = find_app(apps, "demo");
     REQUIRE(demo_app != nullptr);
     CHECK(demo_app->prefix == "/api/demo");
-    CHECK(demo_app->routes == 22);   // 17 main + 4 items + 1 nested
+    CHECK(demo_app->routes == 25);   // 17 main + 4 items + 1 nested + 3 binding-free
 
     SUBCASE("GET /ping -- a DTO becomes JSON") {
         struct pong {
@@ -168,7 +168,7 @@ TEST_CASE("load fut_app_demo and drive its routes") {
         CHECK(v->name == "demo");
         CHECK(v->prefix == "/api/demo");
         CHECK(v->abi == fut::abi_version);
-        CHECK(v->routes.size() == 22);
+        CHECK(v->routes.size() == 25);
         bool found_put = false;
         for (const auto& r : v->routes)
             if (r.method == "PUT" && r.path == "/api/demo/items/{id}") found_put = true;
@@ -447,6 +447,62 @@ TEST_CASE("load fut_app_demo and drive its routes") {
         CHECK(boom.status == 500);
         CHECK(boom.body.find("must not leak") == std::string::npos);
         CHECK(boom.body.find("internal server error") != std::string::npos);
+    }
+
+    SUBCASE("no binding at all -- the request object carries everything") {
+        const std::pair<std::string_view, std::string_view> headers[] = {
+            {"X-Demo-Token", "t0k3n"}, {"User-Agent", "raw-test"}};
+        const auto res = run(ioc, rt, fut::method::GET, "/api/demo/raw/echo", "", "user=yue",
+                             headers);
+        CHECK(res.status == 200);
+
+        struct echo {
+            std::string method{};
+            std::string path{};
+            std::string user{};
+            std::string agent{};
+            bool has_body{};
+            std::size_t headers{};
+            std::string remote{};
+        };
+        const auto v = fut::parse<echo>(res.body);
+        REQUIRE(v.has_value());
+        CHECK(v->method == "GET");
+        CHECK(v->path == "/api/demo/raw/echo");
+        CHECK(v->user == "yue");            // from the query, decoded by hand
+        CHECK(v->agent == "raw-test");      // from a header
+        CHECK(v->has_body == false);
+        CHECK(v->headers == 2);
+    }
+
+    SUBCASE("no binding at all -- path, query, header and JSON body by hand") {
+        const std::pair<std::string_view, std::string_view> headers[] = {
+            {"X-Demo-Token", "abc"}};
+        const auto res = run(ioc, rt, fut::method::POST, "/api/demo/raw/items/7",
+                             R"({"name":"widget","quantity":3})", "trace=xyz", headers);
+        CHECK(res.status == 201);
+
+        struct item {
+            long long id{};
+            std::string name{};
+            int quantity{};
+        };
+        const auto v = fut::parse<item>(res.body);
+        REQUIRE(v.has_value());
+        CHECK(v->id == 7);              // from the path
+        CHECK(v->name == "widget");     // from req.json<item>()
+        CHECK(v->quantity == 3);
+        CHECK(has_header(res, "X-Trace", "xyz"));
+        CHECK(has_header(res, "X-Token-Seen", "yes"));
+    }
+
+    SUBCASE("no binding at all -- a hand-built response") {
+        const auto res = run(ioc, rt, fut::method::GET, "/api/demo/raw/created");
+        CHECK(res.status == 201);
+        CHECK(res.content_type.find("text/html") != std::string::npos);
+        CHECK(has_header(res, "X-Demo-Created", "1"));
+        CHECK(has_header(res, "Set-Cookie"));
+        CHECK(res.body.find("created") != std::string::npos);
     }
 
     SUBCASE("app middleware filters /secure and stamps what comes back") {

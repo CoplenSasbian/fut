@@ -144,6 +144,9 @@ decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm,
     if constexpr (std::is_same_v<Bare, ::fut::request>) {
         return static_cast<const ::fut::request&>(req);
     }
+    else if constexpr (std::is_same_v<Bare, ::fut::path_match>) {
+        return static_cast<const ::fut::path_match&>(pm);
+    }
     else if constexpr (!meta::annotations_of_with_type(p, ^^fut::from_body).empty()) {
         Bare v{};
         if (bool(glz::read_json(v, req.body)))
@@ -196,7 +199,8 @@ decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm,
         static_assert(!sizeof(Bare),
                       "fut: this route parameter needs a binding annotation "
                       "(from_body / from_query / from_path / from_header / "
-                      "from_form / from_file) or must be 'const fut::request&'");
+                      "from_form / from_file) or must be 'const fut::request&' / "
+                      "'const fut::path_match&'");
     }
 }
 

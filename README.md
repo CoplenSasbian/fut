@@ -174,7 +174,8 @@ apps/demo/
     ├── binding.hpp  / .cpp      POST body / body-scalar / form / upload
     ├── runtime.hpp  / .cpp      GET io/log/audit-group/error/{kind}
     ├── items.hpp    / .cpp      /items: hits, get, put, delete (stateful)
-    └── nested.hpp   / .cpp      a controller one namespace deeper
+    ├── nested.hpp   / .cpp      a controller one namespace deeper
+    └── raw.hpp      / .cpp      three routes with no binding at all
 ```
 
 **Declarations and definitions are split**, which is the layout to copy for a real app:
@@ -481,6 +482,67 @@ cannot be read back (`reflect_constant failed`). Stacking needs neither.
 **Middleware is a different concern.** "Do auth / rate-limit around every handler" is not an
 annotation-composition problem: annotations describe *which routes exist*, while invocation policy
 wraps a `route_fn`. Put that in the router/invoke layer, not in an annotation's `operation`.
+
+## Without binding: the request and the response
+
+Binding annotations are a convenience, not a requirement. Take the request and read it; build the
+response and return it:
+
+```cpp
+[[=fut::http_post("/raw/items/{id}")]]
+asio::awaitable<fut::response> create(const fut::request& req,
+                                      const fut::path_match& params) {
+    const std::string_view id = params.segment("id");          // path
+    const auto body = req.json<item>();                        // body -> DTO
+    const std::string trace = req.param_or("trace", "none");   // query, decoded
+    const std::string token{req.header_or("X-Demo-Token", "")}; // header
+
+    fut::response res = fut::json(*body, 201);
+    res.set_header("X-Trace", trace).set_cookie("session", "abc");
+    co_return res;
+}
+```
+
+**`const fut::request&`** — everything about the call:
+
+| Read | Returns |
+| --- | --- |
+| `method` / `path` / `query` / `target` / `body` / `remote` | `std::string_view` (remote is `ip:port`) |
+| `headers` | span of `(name, value)` |
+| `header(name)` / `has_header(name)` / `header_or(name, fallback)` | case-insensitive |
+| `content_type()` | `Content-Type`, empty when absent |
+| `verb()` / `is(fut::method::GET)` | the parsed method |
+| `param(name)` → `optional<string>`, `param_or`, `has_param`, `params()` | query, percent-decoded |
+| `json<T>()` → `optional<T>` | the body parsed as a DTO |
+| `text()` / `empty_body()` | the raw body |
+
+**`const fut::path_match&`** — the captured segments: `segment(name)`, `has(name)`, `count()`,
+`params()`. Any action may take it, with or without binding annotations.
+
+**`fut::response`** — status, media type, headers, body:
+
+| Build | Result |
+| --- | --- |
+| `fut::response::json(payload, code)` / `::text(..)` / `::html(..)` | media type set for you |
+| `::no_content()` / `::redirect(location, code)` | 204 / 302 with `Location` |
+| `set_status` / `set_body` / `set_type` | chainable |
+| `set_header` (replace) / `add_header` (append) / `erase_header` | chainable |
+| `set_cookie(name, value, attrs)` | appends a `Set-Cookie` |
+| `header(name)` / `has_header(name)` / `ok()` | read back |
+
+```bash
+curl -H "User-Agent: curl-raw" "http://127.0.0.1:8080/api/demo/raw/echo?user=yue"
+# {"method":"GET","path":"/api/demo/raw/echo","user":"yue","agent":"curl-raw",
+#  "has_body":false,"headers":3,"remote":"127.0.0.1:60126"}
+
+curl -X POST -H "X-Demo-Token: abc" -d '{"name":"widget","quantity":3}'  "
+  "http://127.0.0.1:8080/api/demo/raw/items/7?trace=xyz"
+# HTTP/1.1 201 Created
+# X-Trace: xyz
+# {"id":7,"name":"widget","quantity":3}
+```
+
+`apps/demo/routes/raw.*` is exactly this: three routes, no binding annotation anywhere.
 
 ## Middleware and filters
 

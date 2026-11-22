@@ -22,6 +22,7 @@
 #include <vector>
 
 #include <fut/export.hpp>
+#include <fut/url.hpp>
 
 namespace fut {
 
@@ -55,15 +56,6 @@ inline std::optional<method> method_from_string(std::string_view s) {
 }
 
 // ---------------------------------------------------------------------------
-// detail::text_buf -- fixed-capacity string buffer (structural)
-// ---------------------------------------------------------------------------
-
-namespace detail {
-
-
-} // namespace fut::detail
-
-// ---------------------------------------------------------------------------
 // request / response
 // ---------------------------------------------------------------------------
 
@@ -81,6 +73,8 @@ inline bool iequals(std::string_view a, std::string_view b) {
 
 } // namespace fut::detail
 
+// The request, as an action sees it. Reading anything here needs no binding
+// annotation: the whole request is handed to the handler.
 struct request {
     std::string_view method{};   // "GET" / "POST" / ...
     std::string_view target{};   // raw request target (with query)
@@ -88,15 +82,61 @@ struct request {
     std::string_view query{};    // everything after '?'
     std::string_view body{};     // request body
     std::span<const std::pair<std::string_view, std::string_view>> headers{};
+    // Peer, "ip:port" (set by the server). Last so the other fields keep their
+    // aggregate order.
+    std::string_view remote{};
 
-    // Case-insensitive header lookup (HTTP header names are). Empty when absent.
+    // ---- headers (case-insensitive, as HTTP is) ----
     [[nodiscard]] std::string_view header(std::string_view name) const {
         for (const auto& [key, value] : headers)
             if (detail::iequals(key, name)) return value;
         return {};
     }
+    [[nodiscard]] bool has_header(std::string_view name) const {
+        for (const auto& [key, value] : headers)
+            if (detail::iequals(key, name)) return true;
+        return false;
+    }
+    [[nodiscard]] std::string_view header_or(std::string_view name,
+                                             std::string_view fallback) const {
+        const std::string_view v = header(name);
+        return v.empty() ? fallback : v;
+    }
+    [[nodiscard]] std::string_view content_type() const { return header("Content-Type"); }
+
+    // ---- method ----
+    // NB: fully qualified -- the 'method' data member above would hide the enum.
+    [[nodiscard]] std::optional<fut::method> verb() const { return method_from_string(method); }
+    [[nodiscard]] bool is(fut::method m) const { return verb() == m; }
+
+    // ---- query string ----
+    // param() decodes, so "name=John+Doe" reads back as "John Doe".
+    [[nodiscard]] std::optional<std::string> param(std::string_view name) const {
+        for (const auto& [key, value] : parse_query(query))
+            if (key == name) return value;
+        return std::nullopt;
+    }
+    [[nodiscard]] std::string param_or(std::string_view name, std::string_view fallback) const {
+        if (auto v = param(name)) return *v;
+        return std::string(fallback);
+    }
+    [[nodiscard]] bool has_param(std::string_view name) const { return param(name).has_value(); }
+    [[nodiscard]] std::vector<std::pair<std::string, std::string>> params() const {
+        return parse_query(query);
+    }
+
+    // ---- body ----
+    // Parsed from the JSON body; defined in <fut/json.hpp> so this header stays
+    // glaze-free.
+    template <class T>
+    [[nodiscard]] std::optional<T> json() const;
+
+    [[nodiscard]] std::string_view text() const { return body; }
+    [[nodiscard]] bool empty_body() const { return body.empty(); }
 };
 
+// What an action returns. A plain DTO would be serialized for you; returning a
+// response means you choose the status, the media type and the headers.
 struct response {
     unsigned status = 200;
     std::string content_type = "application/json";
@@ -106,6 +146,78 @@ struct response {
     response() = default;
     response(unsigned s, std::string ct, std::string b)
         : status(s), content_type(std::move(ct)), body(std::move(b)) {}
+
+    // ---- factories ----
+    static response json(std::string payload, unsigned code = 200) {
+        return response{code, "application/json", std::move(payload)};
+    }
+    static response text(std::string payload, unsigned code = 200) {
+        return response{code, "text/plain; charset=utf-8", std::move(payload)};
+    }
+    static response html(std::string payload, unsigned code = 200) {
+        return response{code, "text/html; charset=utf-8", std::move(payload)};
+    }
+    static response no_content() { return response{204, {}, {}}; }
+    static response redirect(std::string location, unsigned code = 302) {
+        response r{code, "text/plain; charset=utf-8", "redirecting to " + location};
+        r.headers.emplace_back("Location", std::move(location));
+        return r;
+    }
+
+    // ---- fluent editing ----
+    response& set_status(unsigned code) noexcept {
+        status = code;
+        return *this;
+    }
+    response& set_body(std::string payload) {
+        body = std::move(payload);
+        return *this;
+    }
+    response& set_type(std::string type) {
+        content_type = std::move(type);
+        return *this;
+    }
+    // Replaces an existing header with the same (case-insensitive) name.
+    response& set_header(std::string name, std::string value) {
+        for (auto& [key, existing] : headers)
+            if (detail::iequals(key, name)) {
+                existing = std::move(value);
+                return *this;
+            }
+        headers.emplace_back(std::move(name), std::move(value));
+        return *this;
+    }
+    response& add_header(std::string name, std::string value) {
+        headers.emplace_back(std::move(name), std::move(value));
+        return *this;
+    }
+    response& set_cookie(std::string name, std::string value,
+                         std::string_view attributes = "Path=/; HttpOnly") {
+        std::string cookie = std::move(name) + "=" + std::move(value);
+        if (!attributes.empty()) {
+            cookie.append("; ");
+            cookie.append(attributes);
+        }
+        return add_header("Set-Cookie", std::move(cookie));
+    }
+    response& erase_header(std::string_view name) {
+        for (auto it = headers.begin(); it != headers.end(); ++it)
+            if (detail::iequals(it->first, name)) {
+                headers.erase(it);
+                break;
+            }
+        return *this;
+    }
+
+    [[nodiscard]] std::string_view header(std::string_view name) const {
+        for (const auto& [key, value] : headers)
+            if (detail::iequals(key, name)) return value;
+        return {};
+    }
+    [[nodiscard]] bool has_header(std::string_view name) const {
+        return !header(name).empty();
+    }
+    [[nodiscard]] bool ok() const noexcept { return status >= 200 && status < 300; }
 };
 
 // ---------------------------------------------------------------------------
@@ -121,6 +233,11 @@ struct path_match {
         for (std::size_t i = 0; i < named_count; ++i)
             if (named[i].first == key) return named[i].second;
         return {};
+    }
+    [[nodiscard]] bool has(std::string_view key) const { return !segment(key).empty(); }
+    [[nodiscard]] std::size_t count() const noexcept { return named_count; }
+    [[nodiscard]] std::span<const std::pair<std::string_view, std::string_view>> params() const {
+        return {named.data(), named_count};
     }
 };
 

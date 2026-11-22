@@ -11,6 +11,15 @@
 
 namespace fut {
 
+// The body as a DTO. Declared in route.hpp (which stays glaze-free) and
+// defined here, so a request can parse itself wherever JSON is available.
+template <class T>
+std::optional<T> request::json() const {
+    T value{};
+    if (glz::read_json(value, body)) return std::nullopt;
+    return value;
+}
+
 namespace detail {
 struct error_dto { std::string error; };
 }

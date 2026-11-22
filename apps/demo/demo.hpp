@@ -29,5 +29,6 @@
 #include "routes/runtime.hpp"
 #include "routes/items.hpp"
 #include "routes/nested.hpp"
+#include "routes/raw.hpp"
 
 #include "routes.hpp"
