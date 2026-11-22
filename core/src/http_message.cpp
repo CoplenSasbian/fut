@@ -4,6 +4,8 @@
 #include <cctype>
 #include <cstdio>
 #include <ctime>
+
+#include <fut/platform.hpp>
 #include <mutex>
 #include <string>
 
@@ -59,12 +61,7 @@ std::string_view http_date() {
     const std::time_t now = std::time(nullptr);
     std::lock_guard<std::mutex> lock(m);
     if (now != cached_at) {
-        std::tm tm{};
-#ifdef _WIN32
-        gmtime_s(&tm, &now);
-#else
-        gmtime_r(&now, &tm);
-#endif
+        const std::tm tm = fut::platform::utc_time(now);
         char buf[32];
         std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", &tm);
         cached = buf;

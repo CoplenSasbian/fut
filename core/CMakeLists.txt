@@ -18,6 +18,16 @@ add_library(fut_core SHARED
     src/http_message.cpp
 )
 
+# The platform layer: exactly one implementation per platform (see
+# docs/platform-layer.md). No other file in the library knows an OS.
+if(WIN32)
+    target_sources(fut_core PRIVATE src/platform/windows.cpp)
+elseif(APPLE)
+    target_sources(fut_core PRIVATE src/platform/posix.cpp src/platform/macos.cpp)
+else()
+    target_sources(fut_core PRIVATE src/platform/posix.cpp src/platform/linux.cpp)
+endif()
+
 add_library(fut::core ALIAS fut_core)
 
 target_compile_definitions(fut_core PRIVATE FUT_CORE_BUILD)

@@ -1217,6 +1217,11 @@ curl -X POST localhost:8080/api/core/reload
 `apps/`. Both are given `$ORIGIN` rpaths (`$ORIGIN` for the executable, `$ORIGIN/..` for an app), so
 nothing needs `LD_LIBRARY_PATH`: copy the directory and run it.
 
+**Adding a platform.** Everything OS-specific is behind `fut/platform.hpp`, one
+implementation per platform, with the contract and a step-by-step guide in
+[docs/platform-layer.md](docs/platform-layer.md). No other file in the library
+contains an `#ifdef` for an operating system.
+
 **What the loader accepts.** Any file whose name ends in `.dll`, `.so` or `.dylib`
 (case-insensitively) is opened and probed for `fut_app_register`; a library without it is closed
 again silently, and an ABI mismatch is logged and skipped. A library that fails to load logs the

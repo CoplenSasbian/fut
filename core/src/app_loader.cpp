@@ -12,7 +12,7 @@
 #include <fut/export.hpp>
 #include <fut/log.hpp>
 
-#include <fut/detail/dylib.hpp>
+#include <fut/platform.hpp>
 
 namespace fut::exec {
 namespace {
@@ -48,14 +48,14 @@ std::vector<app_loader::entry> app_loader::load_dir(const std::filesystem::path&
         if (!f.is_regular_file(ec)) continue;
         // .dll / .so / .dylib, case-insensitively; a name that is not a fut app
         // is opened and skipped, so the extension is only a prefilter.
-        if (fut::detail::has_library_suffix(f.path().filename().string()))
+        if (fut::platform::is_library_name(f.path().filename().string()))
             files.push_back(f.path());
     }
     std::ranges::sort(files);
 
     for (const auto& p : files) {
         std::string why;
-        fut::detail::shared_library lib = fut::detail::shared_library::open(p, why);
+        fut::platform::library lib = fut::platform::library::open(p, why);
         if (!lib.valid()) {
             loader_log.warning("cannot load {}: {}; skipped", p.string(), why);
             continue;

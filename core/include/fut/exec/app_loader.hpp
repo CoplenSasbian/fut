@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-#include <fut/detail/dylib.hpp>
+#include <fut/platform.hpp>
 #include <fut/exec/module_registry.hpp>
 #include <fut/exec/router.hpp>
 
@@ -62,7 +62,7 @@ public:
     app_loader& operator=(const app_loader&) = delete;
 
 private:
-    std::vector<fut::detail::shared_library> libs_;
+    std::vector<fut::platform::library> libs_;
 };
 
 } // namespace fut::exec

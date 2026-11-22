@@ -24,15 +24,7 @@
 #include <utility>
 #include <vector>
 
-#if defined(_WIN32)
-#    ifndef WIN32_LEAN_AND_MEAN
-#        define WIN32_LEAN_AND_MEAN
-#    endif
-#    ifndef NOMINMAX
-#        define NOMINMAX
-#    endif
-#    include <Windows.h>
-#endif
+#include <fut/platform.hpp>
 
 namespace fut::detail {
 
@@ -137,13 +129,7 @@ public:
 };
 
 std::tm to_local_time(std::time_t stamp) noexcept {
-    std::tm value{};
-#if defined(_WIN32)
-    localtime_s(&value, &stamp);
-#else
-    localtime_r(&stamp, &value);
-#endif
-    return value;
+    return fut::platform::local_time(stamp);
 }
 
 bool field_kind(std::string_view name, pattern_formatter_impl::segment::kind& result) noexcept {
@@ -369,61 +355,22 @@ public:
     }
 
     void write(const formatted& line) noexcept override {
-        if (!m_color) {
+        if (!m_color) {          // plain: the base write adds the newline
             write(line.text);
             return;
         }
-
-#if defined(_WIN32)
-        const auto handle = GetStdHandle(STD_OUTPUT_HANDLE);
-        CONSOLE_SCREEN_BUFFER_INFO saved{};
-        const bool have_handle = handle != INVALID_HANDLE_VALUE && handle != nullptr;
-        const bool have_saved = have_handle && GetConsoleScreenBufferInfo(handle, &saved) != 0;
-        if (have_saved) SetConsoleTextAttribute(handle, level_attribute(line.severity));
-        write(line.text);
-        if (have_saved) SetConsoleTextAttribute(handle, saved.wAttributes);
-#else
-        const auto color = ansi_color(line.severity);
-        if (color.empty()) {
-            write(line.text);
-            return;
-        }
-        std::string framed{color};
-        framed += line.text;
-        framed += "\x1b[0m";
-        write(framed);
-#endif
+        // Colouring a console is the platform layer's business: console
+        // attributes on Windows, ANSI escapes elsewhere, plain text when
+        // the output is a pipe. One buffer, one write, newline included.
+        std::string framed(line.text);
+        framed.push_back('\n');
+        fut::platform::console_write(framed, static_cast<int>(line.severity));
+        std::fflush(stdout);
     }
 
     void flush() noexcept override { std::fflush(stdout); }
 
 private:
-#if defined(_WIN32)
-    static std::uint16_t level_attribute(level value) noexcept {
-        switch (value) {
-        case level::trace: return FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
-        case level::debug: return FOREGROUND_GREEN | FOREGROUND_BLUE;
-        case level::info: return FOREGROUND_GREEN;
-        case level::warning: return FOREGROUND_RED | FOREGROUND_GREEN;
-        case level::error: return FOREGROUND_RED;
-        case level::critical: return FOREGROUND_RED | FOREGROUND_INTENSITY;
-        default: return FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
-        }
-    }
-#else
-    static std::string_view ansi_color(level value) noexcept {
-        switch (value) {
-        case level::trace: return "\x1b[37m";
-        case level::debug: return "\x1b[36m";
-        case level::info: return "\x1b[32m";
-        case level::warning: return "\x1b[33m";
-        case level::error: return "\x1b[31m";
-        case level::critical: return "\x1b[1;31m";
-        default: return {};
-        }
-    }
-#endif
-
     bool m_color{};
 };
 
