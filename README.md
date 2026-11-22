@@ -1165,6 +1165,34 @@ loader_log.info("app '{}' ({} route(s)) <- {}", name, count, path);
   joined during static destruction.
 * Configure with `"log_level": "debug"` in config.json or `--log-level debug`.
 
+## Hot reload
+
+Copy the new DLL into the apps directory, then:
+
+```bash
+curl -X POST localhost:8080/api/core/reload
+# {"reloaded":true,"generation":2,"apps":[{"name":"demo",...}],"error":""}
+
+kill -HUP $(pidof fut_server)     # POSIX: same thing without HTTP (Windows: use the route)
+```
+
+`GET /api/core/status` reports the live `generation`.
+
+**How it stays safe.** A generation is one `app_generation`: the DLLs (its `app_loader`), the router
+built from them, and the app list. Each request pins the current generation with a `shared_ptr`
+before it dispatches, so:
+
+* building the next generation happens **before** the swap — a broken DLL answers a 500 to the
+  reload call and the old one keeps serving;
+* the swap is a pointer exchange under a mutex — no request ever sees a half-built router;
+* the previous generation is unloaded when the last request holding it finishes, so an in-flight
+  request never calls into a DLL that was freed underneath it.
+
+The reload call itself is served by the generation being replaced, and that is fine: the request
+holds its own reference, so the answer is the last thing the old DLLs do.
+
+The same builder runs at start-up and on every reload, so a reload exercises exactly the code path
+that brought the server up.
 ## Deploying a business update
 
 ```bash

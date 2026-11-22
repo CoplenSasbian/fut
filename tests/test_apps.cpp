@@ -15,6 +15,7 @@
 #include <fut/json.hpp>
 #include <fut/log.hpp>
 
+#include <fut/exec/app_host.hpp>
 #include <fut/exec/app_loader.hpp>
 #include <fut/exec/module_registry.hpp>
 #include <fut/exec/router.hpp>
@@ -159,6 +160,85 @@ app_env& env() {
     return e;
 }
 
+
+// One route for the core app, so a generation looks like the server's.
+asio::awaitable<void> status_route(const fut::request&, const fut::path_match&,
+                                   fut::response& out) {
+    out.set_json(R"({"ok":true})");
+    co_return;
+}
+
+TEST_CASE("a reload builds a new generation and leaves the old one to drain") {
+    REQUIRE(std::getenv("FUT_APPS_DIR") != nullptr);
+    const std::filesystem::path dir{std::getenv("FUT_APPS_DIR")};
+
+    asio::io_context ioc;
+    fut::exec::module_registry modules;
+    modules.add("io", typeid(asio::io_context).name(), &ioc);
+
+    // Every generation is built the same way: load the DLLs, add one route,
+    // wrap them, finalize. This is what the server does on start-up and on
+    // reload.
+    auto build = [&](std::size_t id) -> fut::exec::app_host::generation_ptr {
+        auto gen = std::make_shared<fut::exec::app_generation>();
+        gen->id = id;
+        gen->apps = gen->loader.load_dir(dir, gen->rt, modules);
+        gen->rt.begin_app("core", "/api/core");
+        gen->rt.add_route(fut::method::GET, "/api/core/status", &status_route);
+        gen->rt.end_app();
+        gen->rt.finalize();
+        return gen;
+    };
+
+    fut::exec::app_host host{build};
+
+    std::string problem;
+    auto first = host.reload(problem);
+    REQUIRE(first != nullptr);
+    CHECK(first->id == 1);
+    CHECK(host.generation() == 1);
+
+    // a request served by generation 1
+    auto invoke = [&](const fut::exec::app_host::generation_ptr& gen, std::string_view path) {
+        run_state st;
+        fut::request req{"GET", path, path, {}, {}};
+        ioc.restart();
+        asio::co_spawn(ioc, [&]() -> asio::awaitable<void> {
+            co_await gen->rt.dispatch(req, st.res);
+        }, asio::detached);
+        ioc.run();
+        return st.res;
+    };
+
+    const auto before = invoke(first, "/api/demo/ping");
+    CHECK(before.status == 200);
+
+    // reload: a second generation takes over
+    const auto second = host.reload(problem);
+    REQUIRE(second != nullptr);
+    CHECK(second->id == 2);
+    CHECK(host.generation() == 2);
+    CHECK(second->apps.size() == first->apps.size());
+
+    const auto after = invoke(second, "/api/demo/ping");
+    CHECK(after.status == 200);
+    CHECK(after.body == before.body);
+
+    // the first generation is still alive here because 'first' pins it; once
+    // that reference goes, its DLL is unloaded. Dropping it must be safe even
+    // though generation 2 is serving.
+    first.reset();
+    CHECK(invoke(second, "/api/demo/ping").status == 200);
+
+    // a broken builder keeps the running generation
+    fut::exec::app_host broken{[](std::size_t) -> fut::exec::app_host::generation_ptr {
+        throw std::runtime_error("broken DLL");
+    }};
+    std::string err;
+    CHECK(broken.reload(err) == nullptr);
+    CHECK(err.find("broken DLL") != std::string::npos);
+}
+
 TEST_CASE("load fut_app_demo and drive its routes") {
     REQUIRE(std::getenv("FUT_APPS_DIR") != nullptr);
 
@@ -176,14 +256,14 @@ TEST_CASE("load fut_app_demo and drive its routes") {
 
     SUBCASE("GET /ping -- a DTO becomes JSON") {
         struct pong {
-            bool pong{};
+            bool ok{};
             std::string app{};
         };
         const auto res = run(ioc, rt, fut::method::GET, "/api/demo/ping");
         CHECK(res.status == 200);
         const auto v = fut::parse<pong>(res.body);
         REQUIRE(v.has_value());
-        CHECK(v->pong);
+        CHECK(v->ok);
         CHECK(v->app == "demo");
     }
 
@@ -272,14 +352,14 @@ TEST_CASE("load fut_app_demo and drive its routes") {
         const std::pair<std::string_view, std::string_view> headers[] = {
             {"X-Token", "secret-token"}};
         struct pong {
-            bool pong{};
+            bool ok{};
             std::string app{};
         };
         const auto ok = run(ioc, rt, fut::method::GET, "/api/demo/header", "", "", headers);
         CHECK(ok.status == 200);
         const auto v = fut::parse<pong>(ok.body);
         REQUIRE(v.has_value());
-        CHECK(v->pong);
+        CHECK(v->ok);
         CHECK(v->app == "secret-token");
 
         CHECK(run(ioc, rt, fut::method::GET, "/api/demo/header").status == 400);

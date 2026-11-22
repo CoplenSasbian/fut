@@ -98,7 +98,7 @@ private:
     std::string& out_;
 };
 
-asio::awaitable<void> dispatch(router* rt, const http_request_message& msg,
+asio::awaitable<void> dispatch(app_host& apps, const http_request_message& msg,
                                std::string_view remote, fut::response* conn_response) {
     const std::string_view target = msg.target;
     const auto qpos = target.find('?');
@@ -110,10 +110,18 @@ asio::awaitable<void> dispatch(router* rt, const http_request_message& msg,
     // The message already stores its headers as views into its own buffer, so
     // the request spans that list directly -- no per-request copy at all.
     fut::request req{msg.method, target, path, query, msg.body, msg.header_span(), remote};
-    co_await rt->dispatch(req, *conn_response);
+
+    // Pin the generation for this request: a reload may install a new one, and
+    // the old DLLs must stay loaded until we are done with them.
+    app_host::generation_ptr gen = apps.current();
+    if (!gen) {   // only possible before the first load
+        *conn_response = fut::error(503, "no apps loaded");
+        co_return;
+    }
+    co_await gen->rt.dispatch(req, *conn_response);
 }
 
-asio::awaitable<void> run_session(tcp::socket socket, router* rt,
+asio::awaitable<void> run_session(tcp::socket socket, app_host* apps,
                                   std::chrono::seconds timeout) {
     // "ip:port" of the peer, kept for the whole session so the request can
     // carry a stable view.
@@ -191,7 +199,7 @@ asio::awaitable<void> run_session(tcp::socket socket, router* rt,
 
                 const bool keep_alive = msg.keep_alive;
                 conn_response.reset();
-                co_await dispatch(rt, msg, remote, &conn_response);
+                co_await dispatch(*apps, msg, remote, &conn_response);
                 co_await conn_response.end();
                 if (!keep_alive) co_return;
                 parser.reset();
@@ -210,12 +218,12 @@ asio::awaitable<void> run_session(tcp::socket socket, router* rt,
 } // namespace
 
 listener::listener(asio::io_context& ioc, std::string host, unsigned short port,
-                   router& rt, std::chrono::seconds timeout)
+                   app_host& apps, std::chrono::seconds timeout)
     : ioc_(ioc),
       host_(std::move(host)),
       port_(port),
       acceptor_(ioc),
-      router_(rt),
+      apps_(apps),
       timeout_(timeout) {}
 
 asio::awaitable<void> listener::listen() {
@@ -232,7 +240,7 @@ asio::awaitable<void> listener::listen() {
             if (ec == asio::error::operation_aborted) co_return;
             continue;
         }
-        asio::co_spawn(ioc_, run_session(std::move(sock), &router_, timeout_), log_exception);
+        asio::co_spawn(ioc_, run_session(std::move(sock), &apps_, timeout_), log_exception);
     }
 }
 

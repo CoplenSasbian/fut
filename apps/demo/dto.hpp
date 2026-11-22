@@ -11,7 +11,7 @@
 namespace demo {
 
 struct pong {
-    bool pong{};
+    bool ok{};
     std::string app{};   // reused as a free-form string in a few routes
 };
 

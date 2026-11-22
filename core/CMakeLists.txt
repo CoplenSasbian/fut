@@ -13,7 +13,7 @@ add_library(fut_core SHARED
     src/app_loader.cpp
     src/config.cpp
     src/server.cpp
-    src/listener.cpp
+    src/listener.cpp src/app_host.cpp
     src/http_parser.cpp
     src/http_message.cpp
 )

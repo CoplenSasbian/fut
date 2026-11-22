@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <csignal>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
@@ -68,6 +69,10 @@ std::filesystem::path exe_dir() {
 
 // Read by the built-in /api/core/status route once the router is populated.
 const router* g_status_router = nullptr;
+// The generation currently live, and the host that can install a new one.
+std::size_t g_generation = 0;
+const std::size_t* g_status_generation = nullptr;
+app_host* g_app_host = nullptr;
 
 struct app_info_dto {
     std::string name{};
@@ -79,13 +84,53 @@ struct status_dto {
     std::string service{"fut"};
     std::string version{fut::library_version};
     std::uint32_t abi{fut::abi_version};
+    std::size_t generation{};
     std::vector<app_info_dto> apps{};
 };
+
+struct reload_dto {
+    bool reloaded{};
+    std::size_t generation{};
+    std::vector<app_info_dto> apps{};
+    std::string error{};
+};
+
+// Built-in: POST /api/core/reload -- build the next generation and swap it in.
+// The request that calls this keeps the previous generation alive until it
+// finishes, so the answer is the last thing the old DLLs do.
+asio::awaitable<void> core_reload(const fut::request&, const fut::path_match&,
+                                  fut::response& out) {
+    if (g_app_host == nullptr) {
+        out.set_status(503).set_json(R"({"reloaded":false,"error":"server not running"})");
+        co_return;
+    }
+
+    std::string problem;
+    const auto next = g_app_host->reload(problem);
+
+    reload_dto dto;
+    dto.reloaded = next != nullptr;
+    if (!next) {
+        dto.error = std::move(problem);
+        out.set_status(500).dto(dto);
+        co_return;
+    }
+
+    dto.generation = next->id;
+    for (const auto& a : next->rt.apps())
+        dto.apps.push_back(app_info_dto{a.name, a.prefix, a.routes});
+
+    g_generation = next->id;
+    g_status_router = &next->rt;
+    out.dto(dto);
+    co_return;
+}
 
 // Built-in introspection route: GET /api/core/status
 asio::awaitable<void> core_status(const fut::request&, const fut::path_match&,
                                  fut::response& out) {
     status_dto dto;
+    dto.generation = g_generation;
     if (g_status_router)
         for (const auto& a : g_status_router->apps())
             dto.apps.push_back(app_info_dto{a.name, a.prefix, a.routes});
@@ -193,13 +238,7 @@ int server::run() {
         std::filesystem::path apps_dir{cfg.apps_dir};
         if (apps_dir.is_relative()) apps_dir = exe_dir() / apps_dir;
 
-        // Destruction runs in reverse declaration order. The loader is first
-        // so the DLLs are unloaded last: the router holds handlers built from
-        // DLL code, and the io_context may still hold completions whose
-        // handlers live in a DLL. Both must be gone before unload.
-        app_loader loader;
         asio::io_context ioc;
-        router rt;
 
         // The io_context is a service too: an app may want to post work or
         // start a timer on the server's event loop.
@@ -207,42 +246,99 @@ int server::run() {
         modules_.add("log", typeid(fut::log::service).name(),
                      const_cast<fut::log::service*>(&app_log_service));
 
-        // App DLLs register themselves into the router through the context.
-        // Anything the embedder published with add_module() travels with it.
-        loader.load_dir(apps_dir, rt, modules_);
+        // One builder for every generation: the first load and each reload run
+        // exactly the same code, so a reload exercises what start-up does.
+        auto build_generation = [&](std::size_t gen_id) -> app_host::generation_ptr {
+            auto gen = std::make_shared<app_generation>();
+            gen->id = gen_id;
 
-        // Platform middleware wraps everything, so register it first.
-        for (const fut::http::middleware_fn& mw : middlewares_) rt.add_global_middleware(mw);
+            // App DLLs register themselves into this generation's router.
+            gen->apps = gen->loader.load_dir(apps_dir, gen->rt, modules_);
 
-        // Built-in app: the introspection route plus any embedder routes.
-        rt.begin_app("core", "/api/core");
-        rt.add_route(fut::method::GET, "/api/core/status", &core_status);
-        for (const extra_route& r : extra_routes_) rt.add_route(r.method, r.pattern, r.invoke);
-        rt.end_app();
+            // Platform middleware wraps everything, so register it first.
+            for (const fut::http::middleware_fn& mw : middlewares_)
+                gen->rt.add_global_middleware(mw);
 
-        if (error_handler_) rt.set_error_handler(error_handler_);
+            // Built-in app: introspection, reload, plus any embedder routes.
+            gen->rt.begin_app("core", "/api/core");
+            gen->rt.add_route(fut::method::GET, "/api/core/status", &core_status);
+            gen->rt.add_route(fut::method::POST, "/api/core/reload", &core_reload);
+            for (const extra_route& r : extra_routes_)
+                gen->rt.add_route(r.method, r.pattern, r.invoke);
+            gen->rt.end_app();
 
-        rt.finalize();   // wrap every route with its app's chain
-        g_status_router = &rt;
+            if (error_handler_) gen->rt.set_error_handler(error_handler_);
+            gen->rt.finalize();   // wrap every route with its app's chain
+            return gen;
+        };
 
-        listener lsn(ioc, cfg.host, cfg.port, rt, timeout);
+        app_host host{build_generation};
+        std::string problem;
+        if (!host.reload(problem))
+            throw std::runtime_error("cannot load apps: " + problem);
 
-        asio::signal_set signals(ioc, SIGINT, SIGTERM);
-        signals.async_wait([&ioc](auto, auto) { ioc.stop(); });
+        const auto first = host.current();
+        g_generation = first->id;
+        g_status_router = &first->rt;
+        g_app_host = &host;
+
+        listener lsn(ioc, cfg.host, cfg.port, host, timeout);
+
+        // SIGINT/SIGTERM stop; SIGHUP reloads (POSIX only -- Windows has no
+        // SIGHUP delivery, so there POST /api/core/reload is the trigger).
+        asio::signal_set signals(ioc);
+        signals.add(SIGINT);
+        signals.add(SIGTERM);
+#ifdef SIGHUP
+        signals.add(SIGHUP);
+        constexpr bool sighup_reloads = true;
+#else
+        constexpr bool sighup_reloads = false;
+#endif
+
+        auto on_signal = std::make_shared<std::function<void()>>();
+        *on_signal = [&ioc, &host, &signals, on_signal]() {
+            signals.async_wait(
+                [&ioc, &host, on_signal](const boost::system::error_code& ec, int sig) {
+                    if (ec) return;
+#ifdef SIGHUP
+                    if (sig == SIGHUP) {
+                        std::string problem;
+                        if (const auto next = host.reload(problem)) {
+                            g_generation = next->id;
+                            g_status_router = &next->rt;
+                            fut::log::core_log.info("reloaded apps: generation {}", next->id);
+                        } else {
+                            fut::log::core_log.error("reload failed, still serving: {}", problem);
+                        }
+                        (*on_signal)();   // re-arm: SIGHUP may come again
+                        return;
+                    }
+#else
+                    (void)sig;
+                    (void)sighup_reloads;
+#endif
+                    ioc.stop();
+                });
+        };
+        (*on_signal)();
 
         std::vector<std::thread> pool;
         const int extra = std::max(0, cfg.threads - 1);
         for (int i = 0; i < extra; ++i) pool.emplace_back([&ioc] { ioc.run(); });
 
-        fut::log::core_log.info("fut {} (ABI {}) starting: {} thread(s), {} app(s); Ctrl+C to stop",
-                                 fut::library_version, (unsigned)fut::abi_version,
-                                 (int)cfg.threads, (unsigned)rt.apps().size());
+        fut::log::core_log.info(
+            "fut {} (ABI {}) starting: {} thread(s), {} app(s), generation {}; "
+            "Ctrl+C stops, SIGHUP reloads",
+            fut::library_version, (unsigned)fut::abi_version, (int)cfg.threads,
+            (unsigned)first->apps.size(), (unsigned)first->id);
 
         asio::co_spawn(ioc, lsn.listen(), log_exception);
 
         ioc.run();
         for (auto& t : pool) t.join();
 
+        g_app_host = nullptr;
         g_status_router = nullptr;
         fut::log::core_log.info("stopped");
         exit_code = 0;

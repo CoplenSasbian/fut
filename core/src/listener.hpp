@@ -9,6 +9,7 @@
 
 #include <boost/asio.hpp>
 
+#include <fut/exec/app_host.hpp>
 #include <fut/exec/router.hpp>
 
 namespace fut::exec {
@@ -16,7 +17,7 @@ namespace fut::exec {
 class listener {
 public:
     listener(boost::asio::io_context& ioc, std::string host, unsigned short port,
-           router& rt, std::chrono::seconds timeout);
+             app_host& apps, std::chrono::seconds timeout);
 
     boost::asio::awaitable<void> listen();
 
@@ -25,7 +26,7 @@ private:
     std::string host_;
     unsigned short port_;
     boost::asio::ip::tcp::acceptor acceptor_;
-    router& router_;
+    app_host& apps_;
     std::chrono::seconds timeout_;
 };
 
