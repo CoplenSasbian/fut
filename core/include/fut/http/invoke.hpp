@@ -136,7 +136,7 @@ consteval bool needs_form() {
 
 template <meta::info F, std::size_t P>
 decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm,
-                        const ::fut::form_data* form) {
+                        ::fut::response& out, const ::fut::form_data* form) {
     constexpr meta::info p = meta::parameters_of(F).data()[P];
     using param_type = [: meta::type_of(p) :];
     using Bare = std::remove_cvref_t<param_type>;
@@ -145,9 +145,7 @@ decltype(auto) make_arg(const ::fut::request& req, const ::fut::path_match& pm,
         return static_cast<const ::fut::request&>(req);
     }
     else if constexpr (std::is_same_v<Bare, ::fut::response>) {
-        if (req.body_response == nullptr)
-            throw ::fut::bind_error("this dispatch has no response to write to");
-        return static_cast<::fut::response&>(*req.body_response);
+        return static_cast<::fut::response&>(out);
     }
     else if constexpr (std::is_same_v<Bare, ::fut::path_match>) {
         return static_cast<const ::fut::path_match&>(pm);
@@ -221,13 +219,16 @@ template <class Raw>
 inline constexpr bool is_awaitable_v = requires { typename await_value<Raw>::type; };
 
 template <meta::info F, std::size_t... P>
-boost::asio::awaitable<::fut::response> invoke_impl(const ::fut::request& req,
-                                                    const ::fut::path_match& pm,
-                                                    std::index_sequence<P...>) {
+boost::asio::awaitable<void> invoke_free_impl(
+    const ::fut::request& req, const ::fut::path_match& pm, ::fut::response& out,
+    std::index_sequence<P...>) {
     using Raw = [: meta::return_type_of(F) :];
     static_assert(is_awaitable_v<Raw>,
-                  "fut: an action must return asio::awaitable<T>");
+                  "fut: an action must return boost::asio::awaitable<void>");
     using Val = await_value_t<Raw>;
+    static_assert(std::is_void_v<Val>,
+                  "fut: an action returns awaitable<void> and writes into fut::response& -- "
+                  "there is no response-by-return form");
 
     constexpr bool wants_form = needs_form<F>();
     std::optional<::fut::form_data> parsed_form{};
@@ -235,41 +236,15 @@ boost::asio::awaitable<::fut::response> invoke_impl(const ::fut::request& req,
     const ::fut::form_data* form = nullptr;
     if constexpr (wants_form) form = &*parsed_form;
 
-    if constexpr (std::is_void_v<Val>) {
-        // A streaming action: it wrote through the connection's response. The
-        // placeholder is ignored once that response has started.
-        co_await ([: F :])(make_arg<F, P>(req, pm, form)...);
-        co_return ::fut::response{};
-    }
-    else if constexpr (std::is_same_v<Val, ::fut::response>) {
-        co_return co_await ([: F :])(make_arg<F, P>(req, pm, form)...);
-    }
-    else if constexpr (std::is_same_v<Val, std::string>) {
-        std::string body = co_await ([: F :])(make_arg<F, P>(req, pm, form)...);
-        ::fut::response r;
-        r.status = 200;
-        r.content_type = "text/plain; charset=utf-8";
-        r.body = std::move(body);
-        co_return r;
-    }
-    else if constexpr (requires {
-                           glz::write_json(std::declval<Val&>(), std::declval<std::string&>());
-                       }) {
-        co_return ::fut::json(co_await ([: F :])(make_arg<F, P>(req, pm, form)...));
-    }
-    else {
-        static_assert(!sizeof(Val),
-                      "fut: unsupported action return type -- expected "
-                      "awaitable<fut::response>, awaitable<std::string>, or "
-                      "awaitable<DTO> with a glaze-serializable DTO");
-    }
+    co_await ([: F :])(make_arg<F, P>(req, pm, out, form)...);
 }
 
 template <meta::info F>
-boost::asio::awaitable<::fut::response> invoke_route(const ::fut::request& req,
-                                                     const ::fut::path_match& pm) {
+boost::asio::awaitable<void> invoke_route(const ::fut::request& req,
+                                          const ::fut::path_match& pm,
+                                          ::fut::response& out) {
     constexpr std::size_t n = meta::parameters_of(F).size();
-    return invoke_impl<F>(req, pm, std::make_index_sequence<n>{});
+    return invoke_impl<F>(req, pm, out, std::make_index_sequence<n>{});
 }
 
 template <class T>
@@ -278,14 +253,19 @@ T& controller_instance() {
     return instance;
 }
 
+
+
 template <class T, meta::info M, std::size_t... P>
-boost::asio::awaitable<::fut::response> invoke_member_impl(
-    const ::fut::request& req, const ::fut::path_match& pm,
+boost::asio::awaitable<void> invoke_member_impl(
+    const ::fut::request& req, const ::fut::path_match& pm, ::fut::response& out,
     std::index_sequence<P...>) {
     using Raw = [: meta::return_type_of(M) :];
     static_assert(is_awaitable_v<Raw>,
-                  "fut: a controller action must return asio::awaitable<T>");
+                  "fut: an action must return boost::asio::awaitable<void>");
     using Val = await_value_t<Raw>;
+    static_assert(std::is_void_v<Val>,
+                  "fut: an action returns awaitable<void> and writes into fut::response& -- "
+                  "there is no response-by-return form");
 
     constexpr bool wants_form = needs_form<M>();
     std::optional<::fut::form_data> parsed_form{};
@@ -294,40 +274,16 @@ boost::asio::awaitable<::fut::response> invoke_member_impl(
     if constexpr (wants_form) form = &*parsed_form;
 
     auto& self = controller_instance<T>();
-    if constexpr (std::is_void_v<Val>) {
-        co_await (self.[: M :])(make_arg<M, P>(req, pm, form)...);
-        co_return ::fut::response{};
-    }
-    else if constexpr (std::is_same_v<Val, ::fut::response>) {
-        co_return co_await (self.[: M :])(make_arg<M, P>(req, pm, form)...);
-    }
-    else if constexpr (std::is_same_v<Val, std::string>) {
-        std::string body = co_await (self.[: M :])(make_arg<M, P>(req, pm, form)...);
-        ::fut::response r;
-        r.status = 200;
-        r.content_type = "text/plain; charset=utf-8";
-        r.body = std::move(body);
-        co_return r;
-    }
-    else if constexpr (requires {
-                           glz::write_json(std::declval<Val&>(), std::declval<std::string&>());
-                       }) {
-        co_return ::fut::json(co_await (self.[: M :])(make_arg<M, P>(req, pm, form)...));
-    }
-    else {
-        static_assert(!sizeof(Val),
-                      "fut: unsupported controller action return type -- expected "
-                      "awaitable<fut::response>, awaitable<std::string>, or "
-                      "awaitable<DTO> with a glaze-serializable DTO");
-    }
+    co_await (self.[: M :])(make_arg<M, P>(req, pm, out, form)...);
 }
 
 template <meta::info Owner, meta::info M>
-boost::asio::awaitable<::fut::response> invoke_member_route(const ::fut::request& req,
-                                                            const ::fut::path_match& pm) {
+boost::asio::awaitable<void> invoke_member_route(const ::fut::request& req,
+                                                 const ::fut::path_match& pm,
+                                                 ::fut::response& out) {
     using CtrlT = [: Owner :];
     constexpr std::size_t n = meta::parameters_of(M).size();
-    return invoke_member_impl<CtrlT, M>(req, pm, std::make_index_sequence<n>{});
+    return invoke_member_impl<CtrlT, M>(req, pm, out, std::make_index_sequence<n>{});
 }
 
 } // namespace fut::refl

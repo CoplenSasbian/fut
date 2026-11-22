@@ -36,14 +36,14 @@ struct filter : scannable {
     void operation(fut_ctx* ctx) const {
         static_assert(std::meta::is_function(Entity),
                       "fut::filter must annotate a free function with the middleware "
-                      "signature: asio::awaitable<fut::response>(const fut::request&, "
-                      "const fut::path_match&, const fut::http::next_fn&)");
+                      "signature: asio::awaitable<void>(const fut::request&, "
+                      "const fut::path_match&, fut::response&, const fut::http::next_fn&)");
 
         // NB: an alias first -- '<:' right after a template argument list start
         // would be read as the '[' digraph.
         using return_type = [: std::meta::return_type_of(Entity) :];
-        static_assert(std::is_same_v<return_type, boost::asio::awaitable<fut::response>>,
-                      "a fut::filter function must return boost::asio::awaitable<fut::response>");
+        static_assert(std::is_same_v<return_type, boost::asio::awaitable<void>>,
+                      "a fut::filter function must return boost::asio::awaitable<void>");
 
         // Exact match required: a wrong parameter type fails here, with the
         // compiler naming the expected signature.

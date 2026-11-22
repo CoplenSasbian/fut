@@ -40,16 +40,9 @@ asio::awaitable<void> invoke_into(run_state& st, const fut::exec::router& rt,
 
     fut::request req{method, path, path, query, body, header_views};
     try {
-        // Every request has one response object, and the connection owns it.
-        // Here the harness plays the connection: it binds the response, hands it
-        // to the action through the request, then takes over whatever the action
-        // returned.
-        fut::response conn_response;
-        req.body_response = &conn_response;
-
-        fut::response produced = co_await rt.dispatch(req);
-        if (!conn_response.started()) conn_response.absorb(produced);
-        st.res = std::move(conn_response);
+        // Here the harness plays the connection: one response per request, and
+        // the action writes its answer in place.
+        co_await rt.dispatch(req, st.res);
     } catch (...) {
         st.err = std::current_exception();
     }
@@ -152,12 +145,15 @@ app_env& env() {
 
     // Platform middleware: the executable's, sees every request.
     e.rt.add_global_middleware([](const fut::request& req, const fut::path_match& params,
-                                  const fut::http::next_fn& next)
-                                   -> asio::awaitable<fut::response> {
-        if (req.header("x-block") == "1") co_return fut::error(401, "blocked");
-        fut::response res = co_await next(req, params);
-        res.headers.emplace_back("X-Platform", "1");
-        co_return res;
+                                  fut::response& out, const fut::http::next_fn& next)
+                                   -> asio::awaitable<void> {
+        if (req.header("x-block") == "1") {
+            out = fut::error(401, "blocked");
+            co_return;
+        }
+        co_await next(req, params, out);
+        out.headers.emplace_back("X-Platform", "1");
+        co_return;
     });
     e.rt.finalize();
     return e;
@@ -567,12 +563,10 @@ TEST_CASE("load fut_app_demo and drive its routes") {
 
         fut::response out;
         out.bind(&sink);
-        fut::request req{"GET", "/api/demo/events", "/api/demo/events", {}, {}, {}, {}, &out};
+        fut::request req{"GET", "/api/demo/events", "/api/demo/events", {}, {}};
         ioc.restart();
-        fut::response produced;
         asio::co_spawn(ioc, [&]() -> asio::awaitable<void> {
-            produced = co_await rt.dispatch(req);
-            if (!out.started()) out.absorb(produced);
+            co_await rt.dispatch(req, out);
             co_await out.end();
         }, asio::detached);
         ioc.run();
@@ -597,10 +591,11 @@ TEST_CASE("load fut_app_demo and drive its routes") {
 
         fut::response out;
         out.bind(&sink);
-        fut::request req{"GET", "/api/demo/stream", "/api/demo/stream", {}, {}, {}, {}, &out};
+        fut::request req{"GET", "/api/demo/stream", "/api/demo/stream", {}, {}};
         ioc.restart();
         asio::co_spawn(ioc, [&]() -> asio::awaitable<void> {
-            co_await rt.dispatch(req);
+            co_await rt.dispatch(req, out);
+            co_await out.end();
         }, asio::detached);
         ioc.run();
 

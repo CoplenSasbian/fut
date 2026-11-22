@@ -33,8 +33,8 @@
 namespace fut::exec {
 
 // A route's final handler: app middleware already wrapped around the route.
-using handler_fn = std::function<boost::asio::awaitable<fut::response>(
-    const fut::request&, const fut::path_match&)>;
+using handler_fn = std::function<boost::asio::awaitable<void>(
+    const fut::request&, const fut::path_match&, fut::response&)>;
 
 class FUT_API router {
 public:
@@ -77,7 +77,7 @@ public:
 
     // Full pipeline for one request: platform chain -> match -> app chain ->
     // handler, with the error mapping described in fut/http/error.hpp.
-    boost::asio::awaitable<fut::response> dispatch(const fut::request& req) const;
+    boost::asio::awaitable<void> dispatch(const fut::request& req, fut::response& out) const;
 
 
     // Replaces the body written for every error status. The default is
@@ -112,10 +112,11 @@ private:
                                 fut::http::route_fn fn);
     static void add_middleware_thunk(void* self, fut::http::middleware_hook fn);
 
-    boost::asio::awaitable<fut::response> dispatch_chain(const fut::request& req) const;
-    boost::asio::awaitable<fut::response> dispatch_matched(const fut::request& req) const;
-    boost::asio::awaitable<fut::response> dispatch_with(const fut::request& req) const;
-    [[nodiscard]] fut::response make_error(unsigned status, std::string_view message) const;
+    boost::asio::awaitable<void> dispatch_chain(const fut::request& req,
+                                                fut::response& out) const;
+    boost::asio::awaitable<void> dispatch_matched(const fut::request& req,
+                                                  fut::response& out) const;
+    void make_error(fut::response& out, unsigned status, std::string_view message) const;
 
     fut::http::router_module module_{this, &add_route_thunk, &add_middleware_thunk};
     std::vector<entry> entries_{};

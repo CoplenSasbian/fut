@@ -97,8 +97,8 @@ private:
     std::string& out_;
 };
 
-asio::awaitable<fut::response> dispatch(router* rt, const http_request_message& msg,
-                                       std::string_view remote, fut::response* conn_response) {
+asio::awaitable<void> dispatch(router* rt, const http_request_message& msg,
+                               std::string_view remote, fut::response* conn_response) {
     const std::string_view target = msg.target;
     const auto qpos = target.find('?');
     const std::string_view path =
@@ -108,8 +108,8 @@ asio::awaitable<fut::response> dispatch(router* rt, const http_request_message& 
 
     // The message already stores its headers as views into its own buffer, so
     // the request spans that list directly -- no per-request copy at all.
-    co_return co_await rt->dispatch(fut::request{msg.method, target, path, query, msg.body,
-                                                 msg.header_span(), remote, conn_response});
+    fut::request req{msg.method, target, path, query, msg.body, msg.header_span(), remote};
+    co_await rt->dispatch(req, *conn_response);
 }
 
 asio::awaitable<void> run_session(tcp::socket socket, router* rt,
@@ -169,10 +169,7 @@ asio::awaitable<void> run_session(tcp::socket socket, router* rt,
 
                 const bool keep_alive = msg.keep_alive;
                 conn_response.reset();
-                fut::response produced = co_await dispatch(rt, msg, remote, &conn_response);
-                // An action that never wrote returns its response as a value;
-                // the bound object takes it over and writes it.
-                if (!conn_response.started()) conn_response.absorb(produced);
+                co_await dispatch(rt, msg, remote, &conn_response);
                 co_await conn_response.end();
                 if (!keep_alive) co_return;
                 parser.reset();

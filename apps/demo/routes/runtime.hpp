@@ -1,9 +1,6 @@
 #pragma once
 
 // Routes built on injected services, and the error mapping.
-//
-// Everything here throws to fail: the router is the single place that turns an
-// exception into a status and a body.
 
 #include "../common.hpp"
 #include "../dto.hpp"
@@ -12,24 +9,19 @@ namespace demo {
 
 struct [[=fut::controller{}]] runtime_controller {
 
-    // The injected io_context is the server's live loop: a timer created on it
-    // can only fire if that loop is running.
     [[=fut::http_get("/io")]]
-    asio::awaitable<io_out> io();
+    asio::awaitable<void> io(fut::response& out);
 
-    // The injected log groups write into the server's chains: one named after
-    // the variable ("demo.log"), one named by the annotation ("demo.audit").
     [[=fut::http_get("/log")]]
-    asio::awaitable<log_out> write_log();
+    asio::awaitable<void> write_log(fut::response& out);
 
-    // The explicit name is visible on the object itself.
     [[=fut::http_get("/audit-group")]]
-    asio::awaitable<log_out> audit_group();
+    asio::awaitable<void> audit_group(fut::response& out);
 
-    // The whole error mapping in one place: the kind names the failure, and
-    // the router turns the exception into the status and the body.
+    // The whole error mapping in one route: the kind names the failure.
     [[=fut::http_get("/error/{kind}")]]
-    asio::awaitable<pong> error([[=fut::from_path("kind")]] std::string kind);
+    asio::awaitable<void> error([[=fut::from_path("kind")]] std::string kind,
+                                fut::response& out);
 };
 
 } // namespace demo

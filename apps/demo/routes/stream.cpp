@@ -1,10 +1,10 @@
 #include "stream.hpp"
 
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/use_awaitable.hpp>
-
 #include <chrono>
 #include <string>
+
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/use_awaitable.hpp>
 
 namespace demo {
 
@@ -14,7 +14,6 @@ asio::awaitable<void> stream_controller::events(fut::response& out) {
 
     for (int i = 0; i < 5; ++i) {
         co_await out.sse("tick", std::to_string(i));
-        // The handler keeps its own pacing; the injected loop is the server's.
         if (g_io != nullptr) {
             asio::steady_timer timer{*g_io};
             timer.expires_after(std::chrono::milliseconds{20});

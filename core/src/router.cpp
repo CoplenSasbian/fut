@@ -31,21 +31,21 @@ struct chain_cursor {
     const std::vector<fut::http::middleware_fn>& chain;
     const terminal_fn& terminal;
     std::size_t index;
+    fut::response* out;
 };
 
-asio::awaitable<fut::response> run_chain(const std::vector<fut::http::middleware_fn>& chain,
-                                         std::size_t index, const terminal_fn& terminal,
-                                         const fut::request& req,
-                                         const fut::path_match& params) {
-    if (index >= chain.size()) co_return co_await terminal(req, params);
+asio::awaitable<void> run_chain(const std::vector<fut::http::middleware_fn>& chain,
+                                std::size_t index, const terminal_fn& terminal,
+                                const fut::request& req, const fut::path_match& params,
+                                fut::response& out) {
+    if (index >= chain.size()) co_return co_await terminal(req, params, out);
 
-    const chain_cursor cursor{chain, terminal, index};
-    fut::http::next_fn next = [&cursor](const fut::request& r,
-                                        const fut::path_match& p)
-        -> asio::awaitable<fut::response> {
-        co_return co_await run_chain(cursor.chain, cursor.index + 1, cursor.terminal, r, p);
+    chain_cursor cursor{chain, terminal, index, &out};
+    fut::http::next_fn next = [&cursor](const fut::request& r, const fut::path_match& p,
+                                        fut::response& o) -> asio::awaitable<void> {
+        co_return co_await run_chain(cursor.chain, cursor.index + 1, cursor.terminal, r, p, o);
     };
-    co_return co_await chain[index](req, params, next);
+    co_await chain[index](req, params, out, next);
 }
 
 } // namespace
@@ -103,17 +103,22 @@ void router::finalize() {
 
         const fut::http::route_fn raw = e.invoke;
         if (chain.empty()) {
-            e.handler = [raw](const fut::request& req, const fut::path_match& params)
-                -> asio::awaitable<fut::response> { co_return co_await raw(req, params); };
+            e.handler = [raw](const fut::request& req, const fut::path_match& params,
+                              fut::response& out) -> asio::awaitable<void> {
+                co_await raw(req, params, out);
+            };
             continue;
         }
 
         e.handler = [chain = std::move(chain), raw](const fut::request& req,
-                                                    const fut::path_match& params)
-            -> asio::awaitable<fut::response> {
-            terminal_fn terminal = [raw](const fut::request& r, const fut::path_match& p)
-                -> asio::awaitable<fut::response> { co_return co_await raw(r, p); };
-            co_return co_await run_chain(chain, 0, terminal, req, params);
+                                                    const fut::path_match& params,
+                                                    fut::response& out)
+            -> asio::awaitable<void> {
+            terminal_fn terminal = [raw](const fut::request& r, const fut::path_match& p,
+                                         fut::response& o) -> asio::awaitable<void> {
+                co_await raw(r, p, o);
+            };
+            co_await run_chain(chain, 0, terminal, req, params, out);
         };
     }
 }
@@ -137,14 +142,15 @@ std::optional<router::hit> router::match(fut::method m, std::string_view path) c
     return hit{best, best_params};
 }
 
-fut::response router::make_error(unsigned status, std::string_view message) const {
-    if (error_handler_) return error_handler_(status, message);
-    return fut::error(status, message);
+void router::make_error(fut::response& out, unsigned status, std::string_view message) const {
+    if (out.started()) return;   // the head is out; nothing to change any more
+    out = error_handler_ ? error_handler_(status, message) : fut::error(status, message);
 }
 
-asio::awaitable<fut::response> router::dispatch_matched(const fut::request& req) const {
+asio::awaitable<void> router::dispatch_matched(const fut::request& req,
+                                              fut::response& out) const {
     const auto m = fut::method_from_string(req.method);
-    if (!m) co_return make_error(405, "method not allowed");
+    if (!m) co_return make_error(out, 405, "method not allowed");
 
     const auto found = match(*m, req.path);
     if (!found) {
@@ -157,53 +163,50 @@ asio::awaitable<fut::response> router::dispatch_matched(const fut::request& req)
                 break;
             }
         }
-        co_return path_exists ? make_error(405, "method not allowed")
-                              : make_error(404, "no route");
+        co_return make_error(out, path_exists ? 405 : 404,
+                             path_exists ? "method not allowed" : "no route");
     }
 
     if (found->route->handler)
-        co_return co_await found->route->handler(req, found->params);
-    co_return co_await found->route->invoke(req, found->params);
+        co_return co_await found->route->handler(req, found->params, out);
+    co_return co_await found->route->invoke(req, found->params, out);
 }
 
-asio::awaitable<fut::response> router::dispatch_chain(const fut::request& req) const {
-    if (global_.empty()) co_return co_await dispatch_matched(req);
+asio::awaitable<void> router::dispatch_chain(const fut::request& req,
+                                            fut::response& out) const {
+    if (global_.empty()) co_return co_await dispatch_matched(req, out);
 
     // Platform middleware sees every request, including the ones that will
     // not match anything, so it gets no path parameters.
-    terminal_fn terminal = [this](const fut::request& r,
-                                  const fut::path_match&) -> asio::awaitable<fut::response> {
-        co_return co_await dispatch_matched(r);
+    terminal_fn terminal = [this](const fut::request& r, const fut::path_match&,
+                                  fut::response& o) -> asio::awaitable<void> {
+        co_return co_await dispatch_matched(r, o);
     };
     const fut::path_match none{};
-    co_return co_await run_chain(global_, 0, terminal, req, none);
+    co_return co_await run_chain(global_, 0, terminal, req, none, out);
 }
 
 // The one place where errors become responses: an action, a middleware or a
 // binding may throw; every app therefore reports failures the same way.
-asio::awaitable<fut::response> router::dispatch_with(const fut::request& req) const {
+asio::awaitable<void> router::dispatch(const fut::request& req, fut::response& out) const {
     try {
-        co_return co_await dispatch_chain(req);
+        co_await dispatch_chain(req, out);
     } catch (const fut::stream_error&) {
         // The client went away mid-stream: nothing left to answer.
-        co_return fut::response{499, "text/plain", {}};
     } catch (const fut::http_error& e) {
-        co_return make_error(e.status(), e.what());
+        make_error(out, e.status(), e.what());
     } catch (const fut::bind_error& e) {
-        co_return make_error(400, e.what());
+        make_error(out, 400, e.what());
     } catch (const std::exception& e) {
         router_log.error("unhandled exception on {} {}: {}", std::string(req.method),
                          std::string(req.target), e.what());
-        co_return make_error(500, "internal server error");
+        make_error(out, 500, "internal server error");
     } catch (...) {
         router_log.error("unhandled non-standard exception on {} {}", std::string(req.method),
                          std::string(req.target));
-        co_return make_error(500, "internal server error");
+        make_error(out, 500, "internal server error");
     }
-}
-
-asio::awaitable<fut::response> router::dispatch(const fut::request& req) const {
-    co_return co_await dispatch_with(req);
+    co_return;
 }
 
 } // namespace fut::exec

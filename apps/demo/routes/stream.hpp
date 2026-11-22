@@ -1,17 +1,6 @@
 #pragma once
 
-// Streaming responses -- through the response object itself.
-//
-// The connection creates a fut::response at the start of the request and binds
-// it to the socket. An action that takes fut::response& writes into that object:
-//
-//     begin()      send the head (status, headers, media type)
-//     write()      send one body chunk
-//     sse()        send one Server-Sent Event frame
-//     end()        finish (the connection loop calls it when the action returns)
-//
-// An action that never writes leaves the response untouched, and the ordinary
-// "return a value" path takes over.
+// Streaming: the same response object, written while the action runs.
 
 #include "../common.hpp"
 #include "../services.hpp"

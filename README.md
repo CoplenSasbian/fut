@@ -223,8 +223,9 @@ struct [[=fut::controller{}]] binding_controller {
 
 namespace demo {
 
-asio::awaitable<greeting_out> binding_controller::body(greeting_in in) {
-    co_return greeting_out{in.message, in.count * 2, in.count * (in.count + 1) / 2};
+asio::awaitable<void> binding_controller::body(greeting_in in, fut::response& out) {
+    out.dto(greeting_out{in.message, in.count * 2, in.count * (in.count + 1) / 2});
+    co_return;
 }
 
 } // namespace demo
@@ -373,13 +374,16 @@ struct [[=fut::controller("/items")]] items_controller {
     std::atomic<std::uint64_t> hits{0};
 
     [[=fut::http_get("/hits")]]                        // -> GET /api/demo/items/hits
-    asio::awaitable<greeting_out> hits_count() {
-        co_return greeting_out{"hits", 1, hits.fetch_add(1, std::memory_order_relaxed)};
+    asio::awaitable<void> hits_count(fut::response& out) {
+        out.dto(greeting_out{"hits", 1, hits.fetch_add(1, std::memory_order_relaxed)});
+        co_return;
     }
 
     [[=fut::http_get("/{id}")]]                        // -> GET /api/demo/items/{id}
-    asio::awaitable<item> get([[=fut::from_path("id")]] long long id) {
-        co_return item{id, "item-" + std::to_string(id), 1};
+    asio::awaitable<void> get([[=fut::from_path("id")]] long long id,
+                              fut::response& out) {
+        out.dto(item{id, "item-" + std::to_string(id), 1});
+        co_return;
     }
 };
 
@@ -493,21 +497,23 @@ wraps a `route_fn`. Put that in the router/invoke layer, not in an annotation's 
 
 ## Without binding: the request and the response
 
-Binding annotations are a convenience, not a requirement. Take the request and read it; build the
-response and return it:
+Binding annotations are a convenience, not a requirement. Take the request, read it, and write the
+answer into the response you were given:
 
 ```cpp
 [[=fut::http_post("/raw/items/{id}")]]
-asio::awaitable<fut::response> create(const fut::request& req,
-                                      const fut::path_match& params) {
-    const std::string_view id = params.segment("id");          // path
-    const auto body = req.json<item>();                        // body -> DTO
-    const std::string trace = req.param_or("trace", "none");   // query, decoded
-    const std::string token{req.header_or("X-Demo-Token", "")}; // header
+asio::awaitable<void> create(const fut::request& req, const fut::path_match& params,
+                             fut::response& out) {
+    const std::string_view id = params.segment("id");           // path
+    const auto body = req.json<item>();                         // body -> DTO
+    const std::string trace = req.param_or("trace", "none");    // query, decoded
+    const std::string token{req.header_or("X-Demo-Token", "")};  // header
 
-    fut::response res = fut::json(*body, 201);
-    res.set_header("X-Trace", trace).set_cookie("session", "abc");
-    co_return res;
+    out.set_status(201)
+       .dto(*body)
+       .set_header("X-Trace", trace)
+       .set_cookie("session", "abc");
+    co_return;
 }
 ```
 
@@ -570,13 +576,12 @@ curl -X POST -H "X-Demo-Token: abc" -d '{"name":"widget","quantity":3}'  "
 Middleware is a coroutine that either answers the request or continues the chain:
 
 ```cpp
-asio::awaitable<fut::response> log_request(const fut::request& req,
-                                          const fut::path_match& params,
-                                          const fut::http::next_fn& next) {
+asio::awaitable<void> log_request(const fut::request& req, const fut::path_match& params,
+                                  fut::response& out, const fut::http::next_fn& next) {
     const auto start = std::chrono::steady_clock::now();
-    fut::response res = co_await next(req, params);      // or return early
-    res.headers.emplace_back("X-Elapsed-Us", std::to_string(micros_since(start)));
-    co_return res;
+    co_await next(req, params, out);                     // or answer early
+    if (!out.started())
+        out.set_header("X-Elapsed-Us", std::to_string(micros_since(start)));
 }
 ```
 
@@ -595,12 +600,10 @@ fut::exec::server().add_middleware(&log_request).run();
 // registration code in the app at all
 namespace demo {
 [[=fut::filter{}]]
-asio::awaitable<fut::response> stamp(const fut::request& req,
-                                     const fut::path_match& params,
-                                     const fut::http::next_fn& next) {
-    fut::response res = co_await next(req, params);
-    res.headers.emplace_back("X-Demo-App", "yes");
-    co_return res;
+asio::awaitable<void> stamp(const fut::request& req, const fut::path_match& params,
+                            fut::response& out, const fut::http::next_fn& next) {
+    co_await next(req, params, out);
+    if (!out.started()) out.set_header("X-Demo-App", "yes");
 }
 } // namespace demo
 ```
@@ -641,53 +644,49 @@ Two implementation notes:
   not as a `std::function`: a callable constructed inside a DLL would otherwise be destroyed after
   the DLL is unloaded. The executable wraps the pointer in its own `std::function`.
 
-## The response writes, and streaming is the same object
+## One response, created by the connection
 
-`fut::response` is what to send **and** the writing of it. Two modes, one type:
-
-* **unbound** — a plain value. An action fills `status`, headers, media type and body and returns
-  it; the connection's response takes it over (`absorb`) and writes it. This is the normal path:
-  `return` a DTO, a `std::string`, or a `fut::response` (a description, not a writer).
-* **bound** — created by the connection at the start of the request and handed to an action that
-  takes `fut::response&`. The same object can write itself: `begin()` sends the head, `write()` a
-  body chunk, `end()` finishes. That is streaming, with no second abstraction: no separate stream
-  type, no parallel header handling.
-
-So: **return a value** unless the action must write the body as it goes; then **take
-`fut::response&`**. The demo shows both — `/api/demo/events` takes the response, `/api/demo/raw/*`
-returns values.
+`fut::response` is what to send **and** the writing of it. The connection creates one at the start
+of the request, hands it to the action as `fut::response&`, and writes it out afterwards. There is
+no second way to answer and no response-by-return form:
 
 ```cpp
-[[=fut::http_post("/items")]]                       // ordinary: return a value
-asio::awaitable<item> create([[=fut::from_body{}]] item in);
+[[=fut::http_post("/items")]]                        // ordinary action
+asio::awaitable<void> create([[=fut::from_body{}]] item in, fut::response& out) {
+    out.set_status(201).dto(in);                     // status + JSON body
+}
 
-[[=fut::http_get("/events")]]                       // streaming: write through the response
-asio::awaitable<void> events(fut::response& out) {   // the connection's own response
+[[=fut::http_get("/events")]]                         // streaming: same object
+asio::awaitable<void> events(fut::response& out) {
     out.set_type("text/event-stream").set_header("Cache-Control", "no-cache");
     co_await out.begin();                            // head goes out here
     for (int i = 0; i < 5; ++i) co_await out.sse("tick", std::to_string(i));
 }
 ```
 
-| On a bound response | Does |
+The two bodies differ only in *when* bytes leave: `begin()`/`write()`/`sse()` stream them while the
+action runs; otherwise the whole answer is written once, after the action returns.
+
+| On the response | Does |
 | --- | --- |
+| `set_status` / `set_type` / `set_header` / `set_cookie` | the head (before the first write) |
+| `dto(v)` / `set_json` / `set_text` / `set_html` | the body, and the media type; `code` 0 keeps the status |
 | `begin()` | status line + headers once; `Transfer-Encoding: chunked` from here |
 | `write(bytes)` / `write_line(text)` | one body chunk (calls `begin()` first) |
 | `sse(event, data)` / `sse_comment(text)` | one SSE frame / a keep-alive comment |
-| `end()` | the last chunk when streaming, or head + body when the action never wrote |
+| `end()` | the last chunk when streaming, or head + body when nothing was written |
 | `started()` / `finished()` / `bound()` | state |
-| `reset()` / `absorb(other)` | what the connection does per request |
 
-Before the first write nothing is on the wire, so `set_status`, `set_header` and `set_type` still
-apply; afterwards they are fixed. `set_cookie`, `erase_header`, `header(name)`, `ok()` and the
-factories (`json`, `text`, `html`, `no_content`, `redirect`) are shared by both modes.
+Assignment keeps the connection: `out = fut::error(401, "no")` inside a middleware replaces the
+answer but stays bound to the socket, so it is written like any other response.
 
 **Backpressure** is the `co_await`: a slow client slows the producer down instead of growing a
 buffer. **Disconnects** surface as `fut::stream_error` from the next write; let it propagate and the
-connection stops the action (the router maps it to 499 internally).
+connection stops the action.
 
-**Not streaming? Nothing changes**: an action that takes `fut::response&` and never writes is
-ignored — the returned value is written as usual. So an action can decide per request.
+**Errors are the same object**: whatever an action or a middleware throws is caught once, in
+`router::dispatch`, and turned into `fut::http_error`'s status, a 400 for a binding failure, or a
+500 with the detail kept in the log. Filling the response is all it takes to answer.
 
 ```bash
 curl -D- -o /dev/null http://127.0.0.1:8080/api/demo/events
@@ -700,8 +699,8 @@ curl --raw http://127.0.0.1:8080/api/demo/stream
 # 8\r\nchunk-0\n\r\n 8\r\nchunk-1\n\r\n 8\r\nchunk-2\n\r\n 0\r\n\r\n
 ```
 
-Where the writing lives: `core/src/listener.cpp` owns the connection's `response_writer` (one per
-session, one bound response reused per request), `core/src/http_message.cpp` has the framing
+Where the writing lives: `core/src/listener.cpp` owns the connection's `response_writer` (one
+per session, one bound response reused per request), `core/src/http_message.cpp` has the framing
 (`serialize_stream_head` / `append_chunk` / `append_last_chunk` / `serialize_response`), and
 `core/include/fut/http/response.hpp` is the object itself.
 

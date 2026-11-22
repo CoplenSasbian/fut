@@ -87,11 +87,6 @@ struct request {
     // aggregate order.
     std::string_view remote{};
 
-    // The connection's own response for this request: an action that takes
-    // fut::response& writes straight into it (streaming). Null on a plain
-    // dispatch, where a streaming action is an error.
-    response* body_response = nullptr;
-
     // ---- headers (case-insensitive, as HTTP is) ----
     [[nodiscard]] std::string_view header(std::string_view name) const {
         for (const auto& [key, value] : headers)

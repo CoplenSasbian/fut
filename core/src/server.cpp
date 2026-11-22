@@ -83,12 +83,14 @@ struct status_dto {
 };
 
 // Built-in introspection route: GET /api/core/status
-asio::awaitable<fut::response> core_status(const fut::request&, const fut::path_match&) {
+asio::awaitable<void> core_status(const fut::request&, const fut::path_match&,
+                                 fut::response& out) {
     status_dto dto;
     if (g_status_router)
         for (const auto& a : g_status_router->apps())
             dto.apps.push_back(app_info_dto{a.name, a.prefix, a.routes});
-    co_return fut::json(dto);
+    out.dto(dto);
+    co_return;
 }
 
 void log_exception(std::exception_ptr ep) {

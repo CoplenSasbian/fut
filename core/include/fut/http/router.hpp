@@ -47,22 +47,25 @@ namespace fut::http {
 
 // The ABI of one action. Both sides (executable and app DLL) must agree,
 // which is why every module is built from the same fut headers.
-using route_fn = boost::asio::awaitable<response> (*)(const request&, const path_match&);
+// An action: it writes the answer into the response it is given and returns
+// nothing. Streaming is the same signature -- the response object writes.
+using route_fn = boost::asio::awaitable<void> (*)(const request&, const path_match&,
+                                                  response&);
 
-// Resumes the rest of the chain.
-using next_fn = std::function<boost::asio::awaitable<response>(const request&,
-                                                               const path_match&)>;
+// The chain: next() runs the rest of it, writing into the same response.
+using next_fn = std::function<boost::asio::awaitable<void>(const request&,
+                                                           const path_match&, response&)>;
 
 // One middleware: answer the request, or delegate through next().
-using middleware_fn = std::function<boost::asio::awaitable<response>(
-    const request&, const path_match&, const next_fn&)>;
+using middleware_fn = std::function<boost::asio::awaitable<void>(
+    const request&, const path_match&, response&, const next_fn&)>;
 
 // What an app registers: a plain function pointer, deliberately not a
 // std::function. The callable would otherwise be constructed inside the DLL
 // and destroyed after it is unloaded, which frees through a dangling vtable;
 // a pointer stays valid and the executable wraps it in its own std::function.
-using middleware_hook = boost::asio::awaitable<response> (*)(
-    const request&, const path_match&, const next_fn&);
+using middleware_hook = boost::asio::awaitable<void> (*)(
+    const request&, const path_match&, response&, const next_fn&);
 
 struct router_module {
     // Server-private router object; handed back to the functions unchanged.

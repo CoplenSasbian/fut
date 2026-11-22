@@ -20,19 +20,18 @@ namespace asio = boost::asio;
 
 namespace {
 
-asio::awaitable<fut::response> dummy(const fut::request&, const fut::path_match&) {
-    fut::response res;
-    res.body = "handler";
-    co_return res;
+asio::awaitable<void> dummy(const fut::request&, const fut::path_match&, fut::response& out) {
+    out.body = "handler";
+    co_return;
 }
 
-asio::awaitable<fut::response> throws_teapot(const fut::request&, const fut::path_match&) {
+asio::awaitable<void> throws_teapot(const fut::request&, const fut::path_match&, fut::response& out) {
     throw fut::http_error(418, "teapot says no");
 }
-asio::awaitable<fut::response> throws_not_found(const fut::request&, const fut::path_match&) {
+asio::awaitable<void> throws_not_found(const fut::request&, const fut::path_match&, fut::response& out) {
     throw fut::not_found("gone");
 }
-asio::awaitable<fut::response> throws_boom(const fut::request&, const fut::path_match&) {
+asio::awaitable<void> throws_boom(const fut::request&, const fut::path_match&, fut::response& out) {
     throw std::runtime_error("secret detail");
 }
 
@@ -43,7 +42,7 @@ struct run_state {
 
 asio::awaitable<void> invoke_into(run_state& st, const fut::exec::router& rt, fut::request req) {
     try {
-        st.res = co_await rt.dispatch(req);
+        co_await rt.dispatch(req, st.res);   // the action writes the answer in place
     } catch (...) {
         st.err = std::current_exception();
     }
@@ -241,9 +240,10 @@ TEST_CASE("a middleware may throw and the status is still mapped") {
     rt.begin_app("x", "/x");
     rt.add_route(fut::method::GET, "/x/ping", &dummy);
     rt.end_app();
-    rt.add_global_middleware([](const fut::request&, const fut::path_match&,
-                                const fut::http::next_fn&) -> asio::awaitable<fut::response> {
+    rt.add_global_middleware([](const fut::request&, const fut::path_match&, fut::response&,
+                                const fut::http::next_fn&) -> asio::awaitable<void> {
         throw fut::unauthorized("no token");
+        co_return;
     });
     rt.finalize();
 
@@ -259,11 +259,11 @@ TEST_CASE("platform middleware wraps matched routes and 404s") {
     rt.end_app();
 
     rt.add_global_middleware([](const fut::request& req, const fut::path_match& params,
-                                const fut::http::next_fn& next)
-                                 -> asio::awaitable<fut::response> {
-        fut::response res = co_await next(req, params);
-        res.headers.emplace_back("X-Platform", "1");
-        co_return res;
+                                fut::response& out, const fut::http::next_fn& next)
+                                 -> asio::awaitable<void> {
+        co_await next(req, params, out);
+        out.headers.emplace_back("X-Platform", "1");
+        co_return;
     });
     rt.finalize();
 
@@ -285,12 +285,15 @@ TEST_CASE("a middleware can short-circuit and can rewrite the body") {
     rt.end_app();
 
     rt.add_global_middleware([](const fut::request& req, const fut::path_match& params,
-                                const fut::http::next_fn& next)
-                                 -> asio::awaitable<fut::response> {
-        if (req.header("x-key") != "ok") co_return fut::error(401, "blocked");
-        fut::response res = co_await next(req, params);
-        res.body += "+rewritten";
-        co_return res;
+                                fut::response& out, const fut::http::next_fn& next)
+                                 -> asio::awaitable<void> {
+        if (req.header("x-key") != "ok") {
+            out = fut::error(401, "blocked");
+            co_return;
+        }
+        co_await next(req, params, out);
+        out.body += "+rewritten";
+        co_return;
     });
     rt.finalize();
 
@@ -308,10 +311,11 @@ TEST_CASE("app middleware applies to its own routes only") {
     rt.begin_app("a", "/a");
     rt.add_route(fut::method::GET, "/a/ping", &dummy);
     rt.add_middleware([](const fut::request& req, const fut::path_match& params,
-                         const fut::http::next_fn& next) -> asio::awaitable<fut::response> {
-        fut::response res = co_await next(req, params);
-        res.headers.emplace_back("X-App", "a");
-        co_return res;
+                         fut::response& out, const fut::http::next_fn& next)
+                          -> asio::awaitable<void> {
+        co_await next(req, params, out);
+        out.headers.emplace_back("X-App", "a");
+        co_return;
     });
     rt.end_app();
 

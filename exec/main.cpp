@@ -22,18 +22,16 @@ constexpr auto http_log = fut::log::grp("http");
 // Platform middleware: it belongs to the executable, sees every request
 // (including 404s) and wraps every app. Compare with an app middleware, which
 // an app registers for its own routes only.
-asio::awaitable<fut::response> log_request(const fut::request& req,
-                                           const fut::path_match& params,
-                                           const fut::http::next_fn& next) {
+asio::awaitable<void> log_request(const fut::request& req, const fut::path_match& params,
+                                  fut::response& out, const fut::http::next_fn& next) {
     const auto start = std::chrono::steady_clock::now();
-    fut::response res = co_await next(req, params);
+    co_await next(req, params, out);
     const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - start)
                             .count();
     http_log.info("{} {} -> {} ({} us)", std::string(req.method), std::string(req.target),
-                  res.status, micros);
-    res.headers.emplace_back("X-Fut-Elapsed-Us", std::to_string(micros));
-    co_return res;
+                  out.status, micros);
+    if (!out.started()) out.set_header("X-Fut-Elapsed-Us", std::to_string(micros));
 }
 
 } // namespace

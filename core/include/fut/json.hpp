@@ -11,6 +11,18 @@
 
 namespace fut {
 
+template <class T>
+response& response::dto(const T& value, unsigned code) {
+    std::string payload;
+    if (bool(glz::write_json(value, payload))) {
+        status = 500;
+        content_type = "application/json";
+        body = R"({"error":"serialize failed"})";
+        return *this;
+    }
+    return set_json(std::move(payload), code);   // code 0 keeps the status
+}
+
 // The body as a DTO. Declared in route.hpp (which stays glaze-free) and
 // defined here, so a request can parse itself wherever JSON is available.
 template <class T>

@@ -39,8 +39,10 @@ struct upload_out {
 
 struct health_dto { bool ok{true}; };
 
-asio::awaitable<fut::response> health_route(const fut::request&, const fut::path_match&) {
-    co_return fut::json(health_dto{});
+asio::awaitable<void> health_route(const fut::request&, const fut::path_match&,
+                                   fut::response& out) {
+    out.dto(health_dto{});
+    co_return;
 }
 
 // Adds <controller path>/health to whatever class it is put on.
@@ -81,80 +83,97 @@ struct store {
 
 struct [[=fut::controller{}]] main_controller {
     [[=fut::http_get("/ping")]]
-    asio::awaitable<ping_dto> ping() { co_return ping_dto{}; }
+    asio::awaitable<void> ping(fut::response& out) { out.dto(ping_dto{}); co_return; }
 
     [[=fut::http_post("/add")]]
-    asio::awaitable<add_out> add([[=fut::from_body{}]] add_in in) {
-        co_return add_out{in.a + in.b};
+    asio::awaitable<void> add([[=fut::from_body{}]] add_in in, fut::response& out) {
+        out.dto(add_out{in.a + in.b});
+        co_return;
     }
 
     // empty key -> parameter name ("name")
     [[=fut::http_get("/greet")]]
-    asio::awaitable<greet_out> greet([[=fut::from_query{}]] std::string name) {
-        co_return greet_out{"hi " + name};
+    asio::awaitable<void> greet([[=fut::from_query{}]] std::string name,
+                                fut::response& out) {
+        out.dto(greet_out{"hi " + name});
+        co_return;
     }
 
     [[=fut::http_get("/mul/{x}/{y}")]]
-    asio::awaitable<mul_out> mul([[=fut::from_path("x")]] int x,
-                                 [[=fut::from_path("y")]] int y) {
-        co_return mul_out{x * y};
+    asio::awaitable<void> mul([[=fut::from_path("x")]] int x,
+                              [[=fut::from_path("y")]] int y, fut::response& out) {
+        out.dto(mul_out{x * y});
+        co_return;
     }
 
     // escape hatch: no annotation, const fut::request&
     [[=fut::http_get("/raw")]]
-    asio::awaitable<raw_out> raw(const fut::request& req) {
-        co_return raw_out{std::string(req.method), std::string(req.target)};
+    asio::awaitable<void> raw(const fut::request& req, fut::response& out) {
+        out.dto(raw_out{std::string(req.method), std::string(req.target)});
+        co_return;
     }
 
     [[=fut::http_get("/who")]]
-    asio::awaitable<who_dto> who() { co_return who_dto{}; }
+    asio::awaitable<void> who(fut::response& out) { out.dto(who_dto{}); co_return; }
 
     // plain string return -> text/plain
     [[=fut::http_get("/txt")]]
-    asio::awaitable<std::string> txt() { co_return "plain text from fut"; }
+    asio::awaitable<void> txt(fut::response& out) {
+        out.set_text("plain text from fut");
+        co_return;
+    }
 
     [[=fut::http_get("/mix/{n}")]]
-    asio::awaitable<std::string> mixed([[=fut::from_path("n")]] int n) {
-        co_return "n squared is " + std::to_string(n * n);
+    asio::awaitable<void> mixed([[=fut::from_path("n")]] int n, fut::response& out) {
+        out.set_text("n squared is " + std::to_string(n * n));
+        co_return;
     }
 
     // form fields: urlencoded or multipart, empty key -> parameter name
     [[=fut::http_post("/form")]]
-    asio::awaitable<greet_out> form([[=fut::from_form{}]] std::string name,
-                                    [[=fut::from_form("n")]] int n) {
-        co_return greet_out{name + "/" + std::to_string(n)};
+    asio::awaitable<void> form([[=fut::from_form{}]] std::string name,
+                               [[=fut::from_form("n")]] int n, fut::response& out) {
+        out.dto(greet_out{name + "/" + std::to_string(n)});
+        co_return;
     }
 
     // a whole DTO from a form: members are matched by name
     [[=fut::http_post("/formdto")]]
-    asio::awaitable<add_out> form_dto([[=fut::from_form{}]] add_in in) {
-        co_return add_out{in.a + in.b};
+    asio::awaitable<void> form_dto([[=fut::from_form{}]] add_in in, fut::response& out) {
+        out.dto(add_out{in.a + in.b});
+        co_return;
     }
 
     // a whole DTO from query parameters
     [[=fut::http_get("/querydto")]]
-    asio::awaitable<add_out> query_dto([[=fut::from_query{}]] add_in in) {
-        co_return add_out{in.a + in.b};
+    asio::awaitable<void> query_dto([[=fut::from_query{}]] add_in in, fut::response& out) {
+        out.dto(add_out{in.a + in.b});
+        co_return;
     }
 
     // an uploaded file from a multipart part
     [[=fut::http_post("/upload")]]
-    asio::awaitable<upload_out> upload([[=fut::from_file{}]] fut::uploaded_file file) {
-        co_return upload_out{std::string(file.filename), file.size(),
-                             std::string(file.content_type)};
+    asio::awaitable<void> upload([[=fut::from_file{}]] fut::uploaded_file file,
+                                 fut::response& out) {
+        out.dto(upload_out{std::string(file.filename), file.size(),
+                           std::string(file.content_type)});
+        co_return;
     }
 
     // A controller nested inside a class: the scan never descends into a
     // class, so this one must NOT be registered (see the test below).
     struct [[=fut::controller("/inner")]] inner_controller {
         [[=fut::http_get("/hidden")]]
-        asio::awaitable<greet_out> hidden() { co_return greet_out{"unreachable"}; }
+        asio::awaitable<void> hidden(fut::response& out) {
+            out.dto(greet_out{"unreachable"});
+            co_return;
+        }
     };
 };
 
 struct [[=fut::controller("/grp")]] grouped_controller {
     [[=fut::http_get("/first")]]
-    asio::awaitable<greet_out> first() { co_return greet_out{"grouped"}; }
+    asio::awaitable<void> first(fut::response& out) { out.dto(greet_out{"grouped"}); co_return; }
 };
 
 // An entity-agnostic annotation: plain operation(ctx), no template parameter.
@@ -172,13 +191,19 @@ struct [[=always_health{}]] app_marker {};
 
 struct [[=fut::controller("/mon")]] [[=health{}]] monitored_controller {
     [[=fut::http_get("/ping")]]
-    asio::awaitable<greet_out> ping() { co_return greet_out{"monitored"}; }
+    asio::awaitable<void> ping(fut::response& out) {
+        out.dto(greet_out{"monitored"});
+        co_return;
+    }
 };
 
 namespace nested {
 struct [[=fut::controller("/deep")]] nested_controller {
     [[=fut::http_get("/one")]]
-    asio::awaitable<greet_out> deep_one() { co_return greet_out{"deep"}; }
+    asio::awaitable<void> deep_one(fut::response& out) {
+        out.dto(greet_out{"deep"});
+        co_return;
+    }
 };
 } // namespace nested
 
@@ -281,7 +306,9 @@ struct run_state {
 asio::awaitable<void> invoke_into(run_state& st, fut::http::route_fn fn, fut::request req,
                                   fut::path_match pm) {
     try {
-        st.res = co_await fn(req, pm);
+        co_await fn(req, pm, st.res);   // the action writes the answer in place
+    } catch (const fut::bind_error& e) {
+        st.res = fut::error(400, e.what());
     } catch (...) {
         st.err = std::current_exception();
     }

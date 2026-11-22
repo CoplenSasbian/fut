@@ -4,22 +4,18 @@
 //
 // One type, two modes:
 //
-//   * unbound (no connection): a plain value. An action fills status, headers,
-//     media type and body and returns it; the server copies it into the
-//     connection's response and that response writes it.
-//   * bound (created by the connection at the start of the request): the same
-//     object, able to write itself -- begin() sends the head, write() sends a
-//     body chunk, end() finishes. This is what makes streaming possible without
-//     a second, parallel abstraction.
+// The connection creates one at the start of the request and hands it to the
+// action as fut::response&. There is exactly one way to answer:
 //
-//     // ordinary
 //     [[=fut::http_post("/items")]]
-//     asio::awaitable<item> create([[=fut::from_body{}]] item in) { co_return in; }
+//     asio::awaitable<void> create([[=fut::from_body{}]] item in, fut::response& out) {
+//         out.set_status(201).dto(in);                    // status + JSON body
+//     }
 //
-//     // streaming: the connection's response is handed to the action
-//     [[=fut::http_get("/events")]]
+//     [[=fut::http_get("/events")]]                       // streaming is the same object
 //     asio::awaitable<void> events(fut::response& out) {
 //         out.set_type("text/event-stream");
+//         co_await out.begin();                           // head goes out here
 //         for (int i = 0; i < 5; ++i) co_await out.sse("tick", std::to_string(i));
 //     }
 //
@@ -62,10 +58,67 @@ public:
     std::vector<std::pair<std::string, std::string>> headers{};
 
     response() = default;
+
+    // Copies keep everything (including the binding); only assignment is
+    // special, below.
+    response(const response&) = default;
+    response(response&&) noexcept = default;
+
+    // 'out = something' replaces the answer but keeps the connection: a
+    // middleware that fills the response with a value must not unbind it.
+    response& operator=(const response& other) {
+        if (this == &other) return *this;
+        const sink* keep = sink_;
+        status = other.status;
+        content_type = other.content_type;
+        body = other.body;
+        headers = other.headers;
+        started_ = other.started_;
+        finished_ = other.finished_;
+        sink_ = keep;
+        return *this;
+    }
+    response& operator=(response&& other) noexcept {
+        if (this == &other) return *this;
+        const sink* keep = sink_;
+        status = other.status;
+        content_type = std::move(other.content_type);
+        body = std::move(other.body);
+        headers = std::move(other.headers);
+        started_ = other.started_;
+        finished_ = other.finished_;
+        sink_ = keep;
+        return *this;
+    }
     response(unsigned s, std::string ct, std::string b)
         : status(s), content_type(std::move(ct)), body(std::move(b)) {}
 
-    // ---- factories (unbound values) ----
+    // ---- body helpers (the common cases) ----
+    response& set_json(std::string payload, unsigned code = 0) {
+        if (code != 0) status = code;
+        content_type = "application/json";
+        body = std::move(payload);
+        return *this;
+    }
+    response& set_text(std::string payload, unsigned code = 0) {
+        if (code != 0) status = code;
+        content_type = "text/plain; charset=utf-8";
+        body = std::move(payload);
+        return *this;
+    }
+    response& set_html(std::string payload, unsigned code = 0) {
+        if (code != 0) status = code;
+        content_type = "text/html; charset=utf-8";
+        body = std::move(payload);
+        return *this;
+    }
+    // Serializes a DTO into the body (defined in <fut/json.hpp>: this header
+    // stays glaze-free).
+    // code == 0 keeps the status already set.
+    template <class T>
+    response& dto(const T& value, unsigned code = 0);
+
+    // ---- factories (a value to copy into the connection's response) ----
     static response json(std::string payload, unsigned code = 200) {
         return response{code, "application/json", std::move(payload)};
     }
