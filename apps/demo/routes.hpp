@@ -1,11 +1,9 @@
 #pragma once
 
-// all_routes(): reflect over the app's controllers and read their verb
-// annotations, so /info reports what was actually registered.
-//
-// Included last by demo.hpp -- it reads the controller types declared above.
-// FUT_APP_PREFIX comes from the add_app() call, so the paths printed here are
-// the paths that were registered.
+// Reflection over the controllers: collect() reads the verb annotations and
+// composes the registered paths. The template lives in the header because it
+// must be instantiated per controller type; the single all_routes() body is in
+// routes.cpp.
 
 #include <string>
 #include <string_view>
@@ -34,16 +32,6 @@ void collect(std::vector<route_entry>& out, std::string_view class_path) {
             }
         }
     }
-}
-
-inline std::vector<route_entry> all_routes() {
-    std::vector<route_entry> out;
-    collect<demo_controller>(out, "");
-    collect<binding_controller>(out, "");
-    collect<service_controller>(out, "");
-    collect<items_controller>(out, "/items");
-    collect<nested::nested_controller>(out, "/nested");
-    return out;
 }
 
 } // namespace demo

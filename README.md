@@ -162,26 +162,33 @@ after the app. `apps/demo` is the reference implementation — one DLL that exer
 
 ```
 apps/demo/
-├── CMakeLists.txt          add_app(demo /api/demo demo.hpp)   <- the whole build script
-├── demo.hpp                umbrella: includes the modules in order
-├── common.hpp              shared preamble (the asio alias, fut/http)
+├── CMakeLists.txt          add_app(demo /api/demo demo.hpp ...*.cpp)
+├── demo.hpp                umbrella: the ONLY header the scan includes
+├── common.hpp              shared preamble (asio alias, fut/http, inject headers)
 ├── dto.hpp                 plain aggregates; declares all_routes()
-├── services.hpp            injected io_context and log group
-├── middleware.hpp          the app-scoped filter
-├── routes.hpp              all_routes(): reflects over the controllers
+├── services.hpp / .cpp     injected io_context and log groups (extern decl + def)
+├── middleware.hpp / .cpp   the app-scoped filter
+├── routes.hpp / .cpp       collect<T>() template; all_routes() body
 └── routes/
-    ├── core.hpp            GET ping/info/text/custom/query/header/request
-    ├── binding.hpp         POST body / body-scalar / form / upload
-    ├── services.hpp        GET io/log/fail/{code}/boom
-    ├── items.hpp           /items: hits, get, put, delete (stateful)
-    └── nested.hpp          a controller one namespace deeper
+    ├── core.hpp     / .cpp      GET ping/info/text/custom/query/header/request
+    ├── binding.hpp  / .cpp      POST body / body-scalar / form / upload
+    ├── runtime.hpp  / .cpp      GET io/log/audit-group/fail/{code}/boom
+    ├── items.hpp    / .cpp      /items: hits, get, put, delete (stateful)
+    └── nested.hpp   / .cpp      a controller one namespace deeper
 ```
 
-Only the umbrella is listed in `add_app()`; adding a controller means adding one `#include` to
-`demo.hpp`. A feature module is an ordinary header:
+**Declarations and definitions are split**, which is the layout to copy for a real app:
+
+* the **headers** carry the annotated declarations — controllers, the injected services, the
+  middleware registration — and the umbrella includes them in a fixed order;
+* the **`.cpp` files** carry the bodies and no attributes at all.
+
+The scan only sees the umbrella's include chain, so the generated unit compiles declarations while
+every `.cpp` is an ordinary definition unit linked into the same DLL. (Header-only apps are still
+fine for something tiny: list just the header and define the actions inline.)
 
 ```cpp
-// apps/demo/routes/binding.hpp
+// apps/demo/routes/binding.hpp -- declarations, annotations here
 #pragma once
 #include "../common.hpp"
 #include "../dto.hpp"
@@ -193,9 +200,6 @@ struct [[=fut::controller{}]] binding_controller {
     [[=fut::http_post("/body")]]                       // -> POST /api/demo/body
     asio::awaitable<greeting_out> body([[=fut::from_body{}]] greeting_in in);
 
-    [[=fut::http_post("/form")]]                       // -> POST /api/demo/form
-    asio::awaitable<greeting_out> form([[=fut::from_form{}]] greeting_in in);
-
     [[=fut::http_post("/upload")]]                     // -> POST /api/demo/upload
     asio::awaitable<upload_out> upload([[=fut::from_form{}]] std::string title,
                                        [[=fut::from_file{}]] fut::uploaded_file file);
@@ -204,16 +208,48 @@ struct [[=fut::controller{}]] binding_controller {
 } // namespace demo
 ```
 
-Definitions can live in a `.cpp` in the same directory (`asio::awaitable<greeting_out>
-binding_controller::body(greeting_in in) { ... }`) — no annotations there; list it in `add_app()`
-as one more source.
+```cpp
+// apps/demo/routes/binding.cpp -- bodies, no attributes
+#include "binding.hpp"
+
+namespace demo {
+
+asio::awaitable<greeting_out> binding_controller::body(greeting_in in) {
+    co_return greeting_out{in.message, in.count * 2, in.count * (in.count + 1) / 2};
+}
+
+} // namespace demo
+```
+
+Injected services follow the same rule: the annotation sits on an `extern` declaration in the
+header (that is the entity the scan sees), and the definition in the `.cpp` has no attribute:
+
+```cpp
+// services.hpp
+[[=fut::inject{}]] extern boost::asio::io_context* g_io;
+[[=fut::log_group{"demo.audit"}]] extern fut::log::group_ref audit_log;
+
+// services.cpp
+boost::asio::io_context* g_io = nullptr;
+fut::log::group_ref audit_log{};
+```
 
 Wire it up with the `add_app()` helper (defined in `cmake/fut.cmake`, included by the top-level
 `CMakeLists.txt`):
 
 ```cmake
-# apps/demo/CMakeLists.txt -- this one line is the whole build script.
-add_app(demo /api/demo demo.hpp)
+# apps/demo/CMakeLists.txt -- the umbrella header plus the definition units.
+add_app(demo /api/demo
+    demo.hpp
+    services.cpp
+    middleware.cpp
+    routes.cpp
+    routes/core.cpp
+    routes/binding.cpp
+    routes/runtime.cpp
+    routes/items.cpp
+    routes/nested.cpp
+)
 ```
 
  `fut_app_<name>` MODULE target, places

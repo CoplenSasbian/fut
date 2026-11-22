@@ -9,18 +9,18 @@
 //
 // Scope: this runs for the routes of THIS app only, after the executable's
 // platform middleware. A 404 belongs to no app, so it does not run at all.
+//
+// The coroutine is declared here and defined in middleware.cpp; only the
+// registration template has to stay in the header, because the scan
+// instantiates it.
 
 #include "common.hpp"
 
 namespace demo {
 
-inline asio::awaitable<fut::response> stamp(const fut::request& req,
-                                           const fut::path_match& params,
-                                           const fut::http::next_fn& next) {
-    fut::response res = co_await next(req, params);
-    res.headers.emplace_back("X-Demo-App", "yes");
-    co_return res;
-}
+asio::awaitable<fut::response> stamp(const fut::request& req,
+                                     const fut::path_match& params,
+                                     const fut::http::next_fn& next);
 
 struct filter : fut::scannable {
     template <std::meta::info Entity>
