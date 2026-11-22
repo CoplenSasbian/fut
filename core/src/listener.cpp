@@ -62,9 +62,8 @@ asio::awaitable<void> write_all(tcp::socket& socket, std::string_view data) {
 
 // Parsed message -> fut::request. The router owns matching, the middleware
 // chains and the error mapping (400/404/405/500).
-asio::awaitable<fut::response> dispatch(
-    router* rt, const http_request_message& msg, std::string_view remote,
-    std::vector<std::pair<std::string_view, std::string_view>>& header_views) {
+asio::awaitable<fut::response> dispatch(router* rt, const http_request_message& msg,
+                                       std::string_view remote) {
     const std::string_view target = msg.target;
     const auto qpos = target.find('?');
     const std::string_view path =
@@ -72,14 +71,10 @@ asio::awaitable<fut::response> dispatch(
     const std::string_view query =
         (qpos == std::string_view::npos) ? std::string_view{} : target.substr(qpos + 1);
 
-    // The view list is the session's, reused per request: capacity survives, so
-    // a keep-alive connection does not allocate header storage again.
-    header_views.clear();
-    header_views.reserve(msg.headers.size());
-    for (const auto& [name, value] : msg.headers) header_views.emplace_back(name, value);
-
+    // The message already stores its headers as views into its own buffer, so
+    // the request spans that list directly -- no per-request copy at all.
     co_return co_await rt->dispatch(fut::request{msg.method, target, path, query, msg.body,
-                                                 header_views, remote});
+                                                 msg.header_span(), remote});
 }
 
 asio::awaitable<void> run_session(tcp::socket socket, router* rt,
@@ -100,11 +95,9 @@ asio::awaitable<void> run_session(tcp::socket socket, router* rt,
     buffer.reserve(read_chunk * 2);
     std::array<char, read_chunk> chunk{};
 
-    // Reused across the requests of this connection: sending, header views.
+    // Reused across the requests of this connection: the serialized response.
     std::string out;
     out.reserve(1024);
-    std::vector<std::pair<std::string_view, std::string_view>> header_views;
-    header_views.reserve(32);
 
     for (;;) {
         // 1) Parse everything already buffered (pipelined requests too).
@@ -135,7 +128,7 @@ asio::awaitable<void> run_session(tcp::socket socket, router* rt,
                 }
 
                 const bool keep_alive = msg.keep_alive;
-                const fut::response res = co_await dispatch(rt, msg, remote, header_views);
+                const fut::response res = co_await dispatch(rt, msg, remote);
                 serialize_response(out, res.status, res.content_type, res.headers, res.body,
                                    keep_alive);
                 co_await write_all(socket, out);

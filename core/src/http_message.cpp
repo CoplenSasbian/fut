@@ -28,6 +28,7 @@ void http_request_message::clear() {
     method.clear();
     target.clear();
     version.clear();
+    header_bytes.clear();   // capacity kept: the next request reuses it
     headers.clear();
     body.clear();
     keep_alive = true;

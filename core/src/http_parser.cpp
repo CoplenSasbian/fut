@@ -1,6 +1,7 @@
 #include "http_parser.hpp"
 
 #include <cstring>
+#include <vector>
 
 #include <llhttp.h>
 
@@ -10,8 +11,20 @@ struct request_parser::impl {
     llhttp_t parser{};
     llhttp_settings_t settings{};
     http_request_message message{};
-    std::string pending_field{};      // field name awaiting its value
-    bool in_field_name{false};
+    // Offsets into message.header_bytes while a field/value is being appended.
+    // The views are materialised in on_headers_complete, once the buffer has
+    // stopped growing: appending may reallocate it, and a view taken earlier
+    // would then point at freed storage.
+    struct span_offset {
+        std::size_t begin = 0;
+        std::size_t end = 0;
+    };
+    std::vector<span_offset> field_spans{};
+    std::vector<span_offset> value_spans{};
+    std::size_t field_start = 0;
+    std::size_t value_start = 0;
+    bool in_field_name = false;
+    bool in_field_value = false;
     bool complete{false};
     std::size_t consumed{0};
     std::string error{};
@@ -32,8 +45,12 @@ struct request_parser::impl {
         llhttp_init(&parser, HTTP_REQUEST, &settings);
         parser.data = this;
         message.clear();
-        pending_field.clear();
+        field_spans.clear();   // capacity kept: no allocation after warm-up
+        value_spans.clear();
+        field_start = 0;
+        value_start = 0;
         in_field_name = false;
+        in_field_value = false;
         complete = false;
         consumed = 0;
         error.clear();
@@ -46,35 +63,61 @@ struct request_parser::impl {
         return 0;
     }
 
+    // A field name may arrive in pieces, and so may its value. Both are
+    // appended to message.header_bytes as they come and only offsets are kept,
+    // so the whole header block is one reused buffer and the views point
+    // straight into it. A header is closed when the next field starts, or when
+    // the header block ends.
+    void close_header() {
+        const std::size_t size = message.header_bytes.size();
+        const std::size_t field_end = in_field_value ? value_start : size;
+        field_spans.push_back({field_start, field_end});
+        value_spans.push_back({in_field_value ? value_start : size, size});
+        in_field_name = false;
+        in_field_value = false;
+    }
+
+    // Turns the recorded offsets into views over the finished header block.
+    void build_header_views() {
+        message.headers.clear();
+        const std::string_view all{message.header_bytes};
+        message.headers.reserve(field_spans.size());
+        for (std::size_t i = 0; i < field_spans.size(); ++i) {
+            const span_offset f = field_spans[i];
+            const span_offset v = value_spans[i];
+            message.headers.emplace_back(all.substr(f.begin, f.end - f.begin),
+                                         all.substr(v.begin, v.end - v.begin));
+        }
+    }
+
     static int on_header_field(llhttp_t* p, const char* at, std::size_t length) {
         impl* s = self(p);
-        if (s->in_field_name) {
-            s->pending_field.append(at, length);   // field name arrives in pieces
-        } else {
-            s->pending_field.assign(at, length);
+        if (!s->in_field_name) {
+            if (s->in_field_value) s->close_header();       // the previous one is done
+            s->field_start = s->message.header_bytes.size();
             s->in_field_name = true;
+            s->in_field_value = false;
         }
+        s->message.header_bytes.append(at, length);
         return 0;
     }
 
     static int on_header_value(llhttp_t* p, const char* at, std::size_t length) {
         impl* s = self(p);
-        if (s->in_field_name) {
-            s->message.headers.emplace_back(std::move(s->pending_field), std::string{});
-            s->pending_field.clear();
-            s->in_field_name = false;
+        if (!s->in_field_value) {
+            s->in_field_name = false;   // the name is complete, the value starts here
+            s->value_start = s->message.header_bytes.size();
+            s->in_field_value = true;
         }
-        s->message.headers.back().second.append(at, length);
+        s->message.header_bytes.append(at, length);
         return 0;
     }
 
     static int on_headers_complete(llhttp_t* p) {
         impl* s = self(p);
-        if (s->in_field_name) {   // header without a value
-            s->message.headers.emplace_back(std::move(s->pending_field), std::string{});
-            s->pending_field.clear();
-            s->in_field_name = false;
-        }
+        if (s->in_field_name || s->in_field_value)   // the last header
+            s->close_header();
+        s->build_header_views();
         s->message.keep_alive = llhttp_should_keep_alive(p) != 0;
         s->message.method = llhttp_method_name(static_cast<llhttp_method_t>(p->method));
         s->message.version = "HTTP/" + std::to_string(p->http_major) + "." +

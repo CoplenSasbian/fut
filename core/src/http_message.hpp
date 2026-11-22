@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <string>
+#include <span>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -19,7 +20,14 @@ struct http_request_message {
     std::string method{};
     std::string target{};     // request target as sent (path + query)
     std::string version{};    // "HTTP/1.1"
-    std::vector<std::pair<std::string, std::string>> headers{};
+
+    // Header names and values live here, back to back; `headers` only records
+    // where each one is. One string instead of 2N small strings means the
+    // storage is reused across requests on a connection (clear() keeps the
+    // capacity), so parsing headers stops allocating after the first request.
+    std::string header_bytes{};
+    std::vector<std::pair<std::string_view, std::string_view>> headers{};
+
     std::string body{};
     bool keep_alive{true};
 
@@ -31,6 +39,11 @@ struct http_request_message {
     // vectors and the body keep their capacity, so a keep-alive connection
     // stops allocating after the first request.
     void clear();
+
+    [[nodiscard]] std::span<const std::pair<std::string_view, std::string_view>> header_span()
+        const {
+        return headers;
+    }
 
 };
 

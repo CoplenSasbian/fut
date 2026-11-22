@@ -55,9 +55,11 @@ socket ──read──▶ std::string buffer ──▶ request_parser (llhttp) 
 
 The parser is incremental and reports how many bytes a message used, so pipelined requests work
 without copying, and a partial read simply returns `need_more`. Per connection, the read buffer, the
-serialized-response buffer, the header-view vector and the parser's message (headers + body) are all
-**reused**: after the first request, a keep-alive connection stops allocating for the request line,
-headers and response envelope. Walking the middleware chain allocates nothing either — the
+serialized-response buffer and the parser's message are all **reused**. Header names and values live
+back-to-back in one `std::string` (the views in `message.headers` and in `fut::request.headers`
+point into it), so after the first request a keep-alive connection stops allocating for the request
+line, the headers and the response envelope. The views are materialised after the header block stops
+growing, so a reallocation cannot leave one dangling. Walking the middleware chain allocates nothing either — the
 `next_fn` captures one pointer, so it stays inside `std::function`'s small-buffer optimization.
 Timeouts use an `asio::steady_timer`
 that closes the socket, and oversized bodies are rejected with 413.
