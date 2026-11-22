@@ -7,6 +7,25 @@
 
 namespace fut::exec {
 
+namespace {
+
+// The two budgets the parser enforces before anything is buffered. Generous
+// for real headers, small enough that a header bomb is not an out-of-memory.
+constexpr std::size_t max_header_bytes = 64 * 1024;
+constexpr std::size_t max_target_bytes = 8 * 1024;
+
+bool iequals_ascii(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        auto ca = static_cast<unsigned char>(a[i]);
+        auto cb = static_cast<unsigned char>(b[i]);
+        if (std::tolower(ca) != std::tolower(cb)) return false;
+    }
+    return true;
+}
+
+} // namespace
+
 struct request_parser::impl {
     llhttp_t parser{};
     llhttp_settings_t settings{};
@@ -26,6 +45,7 @@ struct request_parser::impl {
     bool in_field_name = false;
     bool in_field_value = false;
     bool complete{false};
+    bool paused_at_headers{false};
     std::size_t consumed{0};
     std::string error{};
 
@@ -42,6 +62,7 @@ struct request_parser::impl {
     }
 
     void reset() {
+        paused_at_headers = false;
         llhttp_init(&parser, HTTP_REQUEST, &settings);
         parser.data = this;
         message.clear();
@@ -118,10 +139,27 @@ struct request_parser::impl {
         if (s->in_field_name || s->in_field_value)   // the last header
             s->close_header();
         s->build_header_views();
+
+        // Everything the dispatcher needs, before any early return below.
         s->message.keep_alive = llhttp_should_keep_alive(p) != 0;
         s->message.method = llhttp_method_name(static_cast<llhttp_method_t>(p->method));
         s->message.version = "HTTP/" + std::to_string(p->http_major) + "." +
                              std::to_string(p->http_minor);
+
+        // Budgets: a header bomb or an absurd target must not be buffered.
+        s->message.headers_too_large = s->message.header_bytes.size() > max_header_bytes;
+        s->message.target_too_large = s->message.target.size() > max_target_bytes;
+        if (s->message.headers_too_large || s->message.target_too_large) {
+            s->message.body.clear();
+            return HPE_PAUSED;   // stop: nothing more is read for this message
+        }
+
+        // A client may ask to be told before it sends a large body: stop at the
+        // end of the header block, let the connection answer, then resume.
+        for (const auto& [name, value] : s->message.headers)
+            if (iequals_ascii(name, "expect") && iequals_ascii(value, "100-continue"))
+                s->message.expect_continue = true;
+        if (s->message.expect_continue) return HPE_PAUSED;
         return 0;
     }
 
@@ -147,9 +185,13 @@ request_parser::status request_parser::feed(const char* data, std::size_t length
 
     const llhttp_errno_t err = llhttp_execute(&impl_->parser, data, length);
 
-    if (err == HPE_PAUSED) {   // message complete, parsing stopped on purpose
+    if (err == HPE_PAUSED) {   // stopped on purpose: headers done, or message done
         const char* stop = llhttp_get_error_pos(&impl_->parser);
         impl_->consumed = static_cast<std::size_t>(stop - data);
+        if (!impl_->complete) {
+            impl_->paused_at_headers = true;
+            return status::interim;
+        }
         return status::complete;
     }
     if (err != HPE_OK) {
@@ -162,6 +204,12 @@ request_parser::status request_parser::feed(const char* data, std::size_t length
     // are consumed.
     impl_->consumed = length;
     return status::need_more;
+}
+
+void request_parser::resume() {
+    if (!impl_->paused_at_headers) return;
+    impl_->paused_at_headers = false;
+    llhttp_resume(&impl_->parser);
 }
 
 const http_request_message& request_parser::message() const { return impl_->message; }

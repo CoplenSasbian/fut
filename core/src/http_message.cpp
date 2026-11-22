@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <ctime>
+#include <mutex>
 #include <string>
 
 namespace fut::exec {
@@ -45,6 +47,34 @@ void http_request_message::clear() {
     keep_alive = true;
 }
 
+// RFC 7231 IMF-fixdate, cached per second: a response without Date is legal
+// but every proxy and cache wants one, and the format is O(1) to reuse.
+namespace {
+
+std::string_view http_date() {
+    static std::mutex m;
+    static std::string cached;
+    static std::time_t cached_at = 0;
+
+    const std::time_t now = std::time(nullptr);
+    std::lock_guard<std::mutex> lock(m);
+    if (now != cached_at) {
+        std::tm tm{};
+#ifdef _WIN32
+        gmtime_s(&tm, &now);
+#else
+        gmtime_r(&now, &tm);
+#endif
+        char buf[32];
+        std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", &tm);
+        cached = buf;
+        cached_at = now;
+    }
+    return cached;
+}
+
+} // namespace
+
 std::string_view reason_phrase(unsigned status) {
     switch (status) {
     case 100: return "Continue";
@@ -61,10 +91,13 @@ std::string_view reason_phrase(unsigned status) {
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
     case 408: return "Request Timeout";
+    case 411: return "Length Required";
+    case 414: return "URI Too Long";
     case 409: return "Conflict";
     case 413: return "Content Too Large";
     case 415: return "Unsupported Media Type";
     case 429: return "Too Many Requests";
+    case 431: return "Request Header Fields Too Large";
     case 500: return "Internal Server Error";
     case 501: return "Not Implemented";
     case 503: return "Service Unavailable";
@@ -91,6 +124,9 @@ void serialize_stream_head(std::string& out, unsigned status, std::string_view c
     out += "\r\n";
     out += "Content-Type: ";
     out += content_type;
+    out += "\r\n";
+    out += "Date: ";
+    out += http_date();
     out += "\r\n";
     out += "Transfer-Encoding: chunked\r\n";
     for (const auto& [name, value] : extra_headers) {
@@ -133,6 +169,9 @@ void serialize_response(std::string& out, unsigned status, std::string_view cont
     out += std::to_string(body.size());
     out += "\r\n";
     out += keep_alive ? "Connection: keep-alive\r\n" : "Connection: close\r\n";
+    out += "Date: ";
+    out += http_date();
+    out += "\r\n";
 
     for (const auto& [name, value] : extra_headers) {
         out += name;

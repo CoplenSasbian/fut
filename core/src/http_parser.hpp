@@ -21,7 +21,9 @@ namespace fut::exec {
 
 class request_parser {
 public:
-    enum class status { need_more, complete, error };
+    // interim: the header block is complete and the parser stopped before the
+    // body (the client asked for 100-continue). message() is filled.
+    enum class status { need_more, complete, interim, error };
 
     request_parser();
     ~request_parser();
@@ -37,6 +39,9 @@ public:
     [[nodiscard]] const http_request_message& message() const;
     [[nodiscard]] std::size_t consumed() const;
     [[nodiscard]] std::string_view error() const;
+
+    // Continues after status::interim: the body follows in the next feed().
+    void resume();
 
     // Prepares the next message on the same connection.
     void reset();

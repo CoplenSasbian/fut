@@ -109,6 +109,25 @@ struct request {
     }
     [[nodiscard]] std::string_view content_type() const { return header("Content-Type"); }
 
+    // One cookie from the Cookie header (the name is exact; the value is
+    // opaque bytes). Empty when the header or the cookie is absent.
+    [[nodiscard]] std::string_view cookie(std::string_view name) const {
+        const std::string_view all = header("cookie");
+        std::size_t pos = 0;
+        while (pos < all.size()) {
+            while (pos < all.size() && (all[pos] == ' ' || all[pos] == ';')) ++pos;
+            const std::size_t end = all.find(';', pos);
+            const std::string_view pair = all.substr(
+                pos, end == std::string_view::npos ? std::string_view::npos : end - pos);
+            const std::size_t eq = pair.find('=');
+            if (eq != std::string_view::npos && pair.substr(0, eq) == name)
+                return pair.substr(eq + 1);
+            if (end == std::string_view::npos) break;
+            pos = end + 1;
+        }
+        return {};
+    }
+
     // ---- method ----
     // NB: fully qualified -- the 'method' data member above would hide the enum.
     [[nodiscard]] std::optional<fut::method> verb() const { return method_from_string(method); }

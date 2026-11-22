@@ -150,6 +150,27 @@ asio::awaitable<void> run_session(tcp::socket socket, router* rt,
                 keep_going = false;
                 break;
 
+            case request_parser::status::interim: {
+                buffer.erase(0, parser.consumed());
+                const http_request_message& msg = parser.message();
+
+                if (msg.headers_too_large || msg.target_too_large) {
+                    const unsigned status = msg.headers_too_large ? 431 : 414;
+                    const std::string_view body = msg.headers_too_large
+                        ? R"({"error":"request header fields too large"})"
+                        : R"({"error":"request target too long"})";
+                    serialize_response(out, status, "application/json", {}, body, false);
+                    co_await write_all(socket, out);
+                    co_return;
+                }
+
+                // The client is waiting before it sends the body: say go.
+                static constexpr std::string_view go = "HTTP/1.1 100 Continue\r\n\r\n";
+                co_await write_all(socket, go);
+                parser.resume();
+                break;   // keep parsing this buffer
+            }
+
             case request_parser::status::error:
                 if (const auto err = parser.error(); !err.empty())
                     srv_log.warning("bad request from peer: {}", std::string(err));

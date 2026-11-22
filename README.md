@@ -64,6 +64,18 @@ growing, so a reallocation cannot leave one dangling. Walking the middleware cha
 Timeouts use an `asio::steady_timer`
 that closes the socket, and oversized bodies are rejected with 413.
 
+### What the connection does for you
+
+| Behaviour | Detail |
+| --- | --- |
+| `Date` | every response carries an IMF-fixdate `Date`, cached per second |
+| `Expect: 100-continue` | the parser stops at the end of the header block, the connection answers `HTTP/1.1 100 Continue`, then parsing resumes — a client waiting for permission before sending a large body is never left hanging |
+| header budget | 64 KiB → **431** `Request Header Fields Too Large` |
+| target budget | 8 KiB → **414** `URI Too Long` |
+| body budget | 32 MiB → **413** |
+| keep-alive | per RFC: `Connection: keep-alive` unless the client asked to close, and pipelined bytes after one message are kept for the next |
+| parse errors | bad framing → **400** and the connection closes |
+| cookies in | `req.cookie("session")` reads one value out of the `Cookie` header |
 ## Requirements (hard)
 
 | Component | Requirement |

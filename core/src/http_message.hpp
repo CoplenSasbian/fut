@@ -31,6 +31,15 @@ struct http_request_message {
     std::string body{};
     bool keep_alive{true};
 
+    // "Expect: 100-continue": the client is waiting for an interim response
+    // before it sends the body, so the connection loop answers it.
+    bool expect_continue{false};
+
+    // True when the header block or the target blew the configured budget; the
+    // loop then answers 431/414 instead of parsing further.
+    bool headers_too_large{false};
+    bool target_too_large{false};
+
     // Case-insensitive header lookup (HTTP header names are). Returns an
     // empty view when absent.
     [[nodiscard]] std::string_view header(std::string_view name) const;

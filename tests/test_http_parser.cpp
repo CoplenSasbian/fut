@@ -136,3 +136,38 @@ TEST_CASE("response serialization writes the framing headers") {
 }
 
 } // TEST_SUITE
+
+TEST_CASE("Expect: 100-continue stops at the headers and resumes") {
+    fut::exec::request_parser p;
+
+    // headers only: the parser pauses before the body
+    const std::string head =
+        "POST /x HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n"
+        "Expect: 100-continue\r\nContent-Length: 7\r\n\r\n";
+    CHECK(p.feed(head.data(), head.size()) == fut::exec::request_parser::status::interim);
+    CHECK(p.message().method == "POST");
+    CHECK(p.message().expect_continue);
+    CHECK(p.consumed() == head.size());
+
+    // the body follows once the caller has answered
+    p.resume();
+    const std::string body = "{\"a\":1}";
+    CHECK(p.feed(body.data(), body.size()) == fut::exec::request_parser::status::complete);
+    CHECK(p.message().body == body);
+}
+
+TEST_CASE("a header bomb or an oversized target is reported, not buffered") {
+    fut::exec::request_parser p;
+    std::string bomb = "GET /x HTTP/1.1\r\nHost: h\r\n";
+    for (int i = 0; i < 400; ++i) bomb += "X-Pad-" + std::to_string(i) + ": " + std::string(200, 'a') + "\r\n";
+    bomb += "\r\n";
+    CHECK(p.feed(bomb.data(), bomb.size()) == fut::exec::request_parser::status::interim);
+    CHECK(p.message().headers_too_large);
+    CHECK(p.message().method == "GET");   // still filled for the 431 response
+
+    fut::exec::request_parser q;
+    std::string long_target = "GET /" + std::string(9000, 'a') + " HTTP/1.1\r\nHost: h\r\n\r\n";
+    CHECK(q.feed(long_target.data(), long_target.size()) ==
+          fut::exec::request_parser::status::interim);
+    CHECK(q.message().target_too_large);
+}

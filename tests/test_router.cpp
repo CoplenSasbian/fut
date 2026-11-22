@@ -459,3 +459,16 @@ TEST_CASE("middleware order: smaller runs first, ties keep declaration order") {
     const auto chain = rt.global_middleware();
     CHECK(chain.size() == 4);
 }
+
+TEST_CASE("one cookie is readable by name") {
+    fut::request req{};
+    std::string cookie_header = "a=1; session=abc123; b=2";
+    const std::pair<std::string_view, std::string_view> headers[] = {
+        {"Cookie", cookie_header}};
+    req.headers = headers;
+
+    CHECK(req.cookie("session") == "abc123");
+    CHECK(req.cookie("a") == "1");
+    CHECK(req.cookie("b") == "2");
+    CHECK(req.cookie("missing").empty());
+}
