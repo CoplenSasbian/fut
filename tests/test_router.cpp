@@ -68,6 +68,37 @@ bool has_header(const fut::response& res, std::string_view name, std::string_vie
 
 } // namespace
 
+TEST_CASE("a request borrows, an owned_request keeps") {
+    // What the connection actually owns: one buffer, reused every request.
+    std::string read_buffer =
+        "GET /api/demo/items/7?trace=xyz body-bytes";
+    std::vector<std::pair<std::string_view, std::string_view>> header_views{
+        {"Host", "example"}, {"X-Token", "abc"}};
+
+    fut::request borrowed{std::string_view{"GET"},
+                          std::string_view{read_buffer}.substr(3, 28),
+                          std::string_view{"/api/demo/items/7"},
+                          std::string_view{"trace=xyz"},
+                          std::string_view{"body-bytes"},
+                          header_views,
+                          std::string_view{"127.0.0.1:1234"}};
+    CHECK(borrowed.header("x-token") == "abc");
+    CHECK(borrowed.param_or("trace", "") == "xyz");
+
+    // Take a snapshot, then let the connection overwrite its buffer -- which is
+    // exactly what the next request on a keep-alive connection does.
+    const fut::owned_request kept{borrowed};
+    read_buffer.assign(read_buffer.size(), '#');
+    header_views.clear();
+
+    const fut::request copy = kept.view();
+    CHECK(copy.header("x-token") == "abc");      // survived the overwrite
+    CHECK(copy.param_or("trace", "") == "xyz");
+    CHECK(copy.body == "body-bytes");
+    CHECK(copy.remote == "127.0.0.1:1234");
+    CHECK(borrowed.header("x-token") == "abc");  // the view list was cleared
+}
+
 TEST_CASE("module lookup is keyed by type, names disambiguate") {
     struct store {
         int id{};

@@ -135,6 +135,54 @@ struct request {
     [[nodiscard]] bool empty_body() const { return body.empty(); }
 };
 
+// A request that owns its bytes.
+//
+// fut::request borrows: the connection keeps the read buffer, the parser keeps
+// the message, and the views are valid until the action returns. That is what
+// makes the hot path allocation-free. When a request must outlive the call --
+// queued for later, handed to another thread, stored for an audit log -- take
+// an owned snapshot deliberately:
+//
+//     fut::owned_request kept{req};          // one copy, at this point only
+//     ...later...  kept.view().json<order>()
+//
+// view() rebuilds the header views on every call, so do not move an
+// owned_request while one of its views is still in use.
+struct owned_request {
+    std::string method{};
+    std::string target{};
+    std::string path{};
+    std::string query{};
+    std::string body{};
+    std::string remote{};
+    std::vector<std::pair<std::string, std::string>> headers{};
+
+    owned_request() = default;
+    explicit owned_request(const request& r)
+        : method(r.method),
+          target(r.target),
+          path(r.path),
+          query(r.query),
+          body(r.body),
+          remote(r.remote) {
+        headers.reserve(r.headers.size());
+        for (const auto& [name, value] : r.headers)
+            headers.emplace_back(name, value);
+    }
+
+    [[nodiscard]] request view() const {
+        std::vector<std::pair<std::string_view, std::string_view>> views;
+        views.reserve(headers.size());
+        for (const auto& [name, value] : headers) views.emplace_back(name, value);
+        // The vector is rebuilt below into a member so the span stays valid.
+        const_cast<owned_request*>(this)->header_views = std::move(views);
+        return request{method, target, path, query, body, header_views, remote};
+    }
+
+private:
+    std::vector<std::pair<std::string_view, std::string_view>> header_views{};
+};
+
 // What an action returns. A plain DTO would be serialized for you; returning a
 // response means you choose the status, the media type and the headers.
 struct response {

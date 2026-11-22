@@ -510,6 +510,19 @@ asio::awaitable<fut::response> create(const fut::request& req,
 }
 ```
 
+**Who owns the bytes.** The *connection* does: it keeps the read buffer, the parser (which keeps the
+message: the header block and the body) and the serialized-response buffer, and reuses all of them
+for every request on that connection. `fut::request` is a set of views onto that storage, which is
+what makes the hot path allocation-free — but it also means a view is only valid until the action
+returns. When a request must outlive the call (queued, handed to another thread, stored for an
+audit log), take an owning snapshot on purpose:
+
+```cpp
+fut::owned_request kept{req};        // one deep copy, here and only here
+...later...
+const fut::request again = kept.view();
+```
+
 **`const fut::request&`** — everything about the call:
 
 | Read | Returns |
