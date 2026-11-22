@@ -17,6 +17,12 @@ asio::awaitable<item> items_controller::update(long long id, item in) {
     co_return in;
 }
 
+asio::awaitable<item> items_controller::patch(long long id, item in) {
+    in.id = id;
+    if (in.name.empty()) in.name = "patched";
+    co_return in;
+}
+
 asio::awaitable<void> items_controller::remove(long long id, fut::response& out) {
     out.set_status(204).set_header("X-Deleted", std::to_string(id));
     co_return;

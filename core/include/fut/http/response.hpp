@@ -75,6 +75,7 @@ public:
         headers = other.headers;
         started_ = other.started_;
         finished_ = other.finished_;
+        head_only_ = other.head_only_;
         sink_ = keep;
         return *this;
     }
@@ -190,6 +191,15 @@ public:
     // ---- binding: the connection owns this part ----
     void bind(const sink* connection_sink) noexcept { sink_ = connection_sink; }
     [[nodiscard]] bool bound() const noexcept { return sink_ != nullptr; }
+
+    // HEAD: send exactly the head of the answer this response describes, with
+    // its Content-Length, and no body. The router sets this when it falls back
+    // from HEAD to the GET route.
+    response& head_only(bool v = true) noexcept {
+        head_only_ = v;
+        return *this;
+    }
+    [[nodiscard]] bool is_head_only() const noexcept { return head_only_; }
     [[nodiscard]] bool started() const noexcept { return started_; }
     [[nodiscard]] bool finished() const noexcept { return finished_; }
 
@@ -201,6 +211,7 @@ public:
         headers.clear();
         started_ = false;
         finished_ = false;
+        head_only_ = false;
     }
 
     // Takes another response's content (the value an action returned).
@@ -294,6 +305,7 @@ private:
     const sink* sink_ = nullptr;
     bool started_ = false;
     bool finished_ = false;
+    bool head_only_ = false;
 };
 
 } // namespace fut

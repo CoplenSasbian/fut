@@ -59,12 +59,14 @@ struct http_request_message {
 [[nodiscard]] std::string serialize_response(
     unsigned status, std::string_view content_type,
     const std::vector<std::pair<std::string, std::string>>& extra_headers,
-    std::string_view body, bool keep_alive);
+    std::string_view body, bool keep_alive, bool head_only = false);
 
+// head_only writes the head (including the Content-Length of the body it
+// describes) and nothing else -- that is what a HEAD answer is.
 void serialize_response(
     std::string& out, unsigned status, std::string_view content_type,
     const std::vector<std::pair<std::string, std::string>>& extra_headers,
-    std::string_view body, bool keep_alive);
+    std::string_view body, bool keep_alive, bool head_only = false);
 
 // The head of a streaming response: status line + headers with
 // "Transfer-Encoding: chunked" and no Content-Length. The chunks follow.

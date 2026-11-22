@@ -172,7 +172,7 @@ TEST_CASE("load fut_app_demo and drive its routes") {
     const auto* demo_app = find_app(apps, "demo");
     REQUIRE(demo_app != nullptr);
     CHECK(demo_app->prefix == "/api/demo");
-    CHECK(demo_app->routes == 27);   // 20 main + 4 items + 1 nested + 3 binding-free
+    CHECK(demo_app->routes == 28);   // 20 main + 5 items + 1 nested + 3 binding-free
 
     SUBCASE("GET /ping -- a DTO becomes JSON") {
         struct pong {
@@ -205,7 +205,7 @@ TEST_CASE("load fut_app_demo and drive its routes") {
         CHECK(v->name == "demo");
         CHECK(v->prefix == "/api/demo");
         CHECK(v->abi == fut::abi_version);
-        CHECK(v->routes.size() == 27);
+        CHECK(v->routes.size() == 28);
         bool found_put = false;
         for (const auto& r : v->routes)
             if (r.method == "PUT" && r.path == "/api/demo/items/{id}") found_put = true;

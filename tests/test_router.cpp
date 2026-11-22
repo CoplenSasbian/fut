@@ -187,6 +187,57 @@ TEST_CASE("routes added outside an app carry no app name") {
     CHECK(rt.match(fut::method::GET, "/standalone").has_value());
 }
 
+TEST_CASE("HEAD uses the GET route and sends no body") {
+    fut::exec::router rt;
+    rt.begin_app("x", "/x");
+    rt.add_route(fut::method::GET, "/x/ping", &dummy);
+    rt.end_app();
+    rt.finalize();
+
+    const auto head = run(rt, "HEAD", "/x/ping");
+    CHECK(head.status == 200);
+    CHECK(head.body == "handler");          // the answer is built...
+    CHECK(head.is_head_only());             // ...and only its head goes out
+}
+
+TEST_CASE("OPTIONS answers itself with Allow") {
+    fut::exec::router rt;
+    rt.begin_app("x", "/x");
+    rt.add_route(fut::method::GET, "/x/ping", &dummy);
+    rt.add_route(fut::method::POST, "/x/ping", &dummy);
+    rt.end_app();
+    rt.finalize();
+
+    const auto options = run(rt, "OPTIONS", "/x/ping");
+    CHECK(options.status == 204);
+    const std::string allow(options.header("Allow"));
+    REQUIRE_FALSE(allow.empty());
+    CHECK(allow.find("GET") != std::string::npos);
+    CHECK(allow.find("POST") != std::string::npos);
+    CHECK(allow.find("OPTIONS") != std::string::npos);
+
+    CHECK(run(rt, "OPTIONS", "/x/nope").status == 404);
+}
+
+TEST_CASE("405 carries Allow and the new methods route") {
+    fut::exec::router rt;
+    rt.begin_app("x", "/x");
+    rt.add_route(fut::method::GET, "/x/thing", &dummy);
+    rt.add_route(fut::method::PATCH, "/x/thing", &dummy);
+    rt.end_app();
+    rt.finalize();
+
+    const auto refused = run(rt, "DELETE", "/x/thing");
+    CHECK(refused.status == 405);
+    const std::string allow(refused.header("Allow"));
+    REQUIRE_FALSE(allow.empty());
+    CHECK(allow.find("PATCH") != std::string::npos);
+
+    CHECK(run(rt, "PATCH", "/x/thing").status == 200);
+    CHECK(fut::to_string(fut::method::PATCH) == "PATCH");
+    CHECK(fut::method_from_string("TRACE") == fut::method::TRACE);
+}
+
 TEST_CASE("errors map to statuses in one place") {
     fut::exec::router rt;
     rt.begin_app("x", "/x");

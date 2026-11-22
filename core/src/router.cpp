@@ -147,29 +147,76 @@ void router::make_error(fut::response& out, unsigned status, std::string_view me
     out = error_handler_ ? error_handler_(status, message) : fut::error(status, message);
 }
 
+namespace {
+
+// The methods registered on a path, for Allow: HEAD and OPTIONS describe
+// themselves even when nobody registered them.
+std::string allowed_methods(const std::vector<fut::exec::router::entry>& entries,
+                            std::string_view path) {
+    std::string allow;
+    auto add = [&allow](std::string_view name) {
+        if (!allow.empty()) allow += ", ";
+        allow += name;
+    };
+    bool head = false, options = false;
+    for (const fut::exec::router::entry& e : entries) {
+        fut::path_match params;
+        if (!fut::match_pattern(e.pattern, path, params)) continue;
+        if (e.method != fut::method::GET && e.method != fut::method::HEAD &&
+            e.method != fut::method::OPTIONS)
+            add(fut::to_string(e.method));
+        head = head || e.method == fut::method::GET || e.method == fut::method::HEAD;
+        options = true;
+    }
+    if (head) add("GET, HEAD");            // the GET route answers HEAD too
+    if (options) add("OPTIONS");            // answered with this very header
+    return allow;
+}
+
+} // namespace
+
 asio::awaitable<void> router::dispatch_matched(const fut::request& req,
                                               fut::response& out) const {
     const auto m = fut::method_from_string(req.method);
     if (!m) co_return make_error(out, 405, "method not allowed");
 
     const auto found = match(*m, req.path);
-    if (!found) {
-        // 405 only when the path exists under another method; otherwise 404.
-        bool path_exists = false;
-        for (const entry& e : entries_) {
-            fut::path_match params;
-            if (fut::match_pattern(e.pattern, req.path, params)) {
-                path_exists = true;
-                break;
-            }
-        }
-        co_return make_error(out, path_exists ? 405 : 404,
-                             path_exists ? "method not allowed" : "no route");
+    if (found) {
+        // HEAD without a HEAD route is the GET route minus the body.
+        if (*m == fut::method::HEAD) out.head_only();
+        if (found->route->handler)
+            co_return co_await found->route->handler(req, found->params, out);
+        co_return co_await found->route->invoke(req, found->params, out);
     }
 
-    if (found->route->handler)
-        co_return co_await found->route->handler(req, found->params, out);
-    co_return co_await found->route->invoke(req, found->params, out);
+    // HEAD -> GET fallback (RFC 9110: HEAD is GET without the body).
+    if (*m == fut::method::HEAD) {
+        if (const auto via_get = match(fut::method::GET, req.path)) {
+            out.head_only();
+            if (via_get->route->handler)
+                co_return co_await via_get->route->handler(req, via_get->params, out);
+            co_return co_await via_get->route->invoke(req, via_get->params, out);
+        }
+    }
+
+    const std::string allow = allowed_methods(entries_, req.path);
+
+    // OPTIONS without a handler answers itself: what the path allows.
+    if (*m == fut::method::OPTIONS) {
+        if (allow.empty()) co_return make_error(out, 404, "no route");
+        out.set_status(204).set_header("Allow", allow);
+        co_return;
+    }
+
+    // 405 only when the path exists under another method; otherwise 404.
+    if (!allow.empty()) {
+        // 405 after the body exists: make_error replaces the response, so the
+        // Allow header goes on afterwards.
+        make_error(out, 405, "method not allowed");
+        if (!out.started()) out.set_header("Allow", allow);
+        co_return;
+    }
+    co_return make_error(out, 404, "no route");
 }
 
 asio::awaitable<void> router::dispatch_chain(const fut::request& req,

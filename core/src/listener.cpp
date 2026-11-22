@@ -86,7 +86,8 @@ public:
             co_await write_all(socket_, out_);
         };
         s.whole = [this](const fut::response& r) -> asio::awaitable<void> {
-            serialize_response(out_, r.status, r.content_type, r.headers, r.body, true);
+            serialize_response(out_, r.status, r.content_type, r.headers, r.body, true,
+                               r.is_head_only());
             co_await write_all(socket_, out_);
         };
         return s;

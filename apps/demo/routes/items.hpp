@@ -33,6 +33,11 @@ struct [[=fut::controller("/items")]] items_controller {
     [[=fut::http_delete("/{id}")]]
     asio::awaitable<void> remove([[=fut::from_path("id")]] long long id,
                                 fut::response& out);
+
+    // PATCH: a partial update, same path as the other verbs.
+    [[=fut::http_patch("/{id}")]]
+    asio::awaitable<item> patch([[=fut::from_path("id")]] long long id,
+                                [[=fut::from_body{}]] item in);
 };
 
 } // namespace demo

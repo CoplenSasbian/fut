@@ -69,6 +69,21 @@ constexpr http_action http_put(std::string_view path) {
 constexpr http_action http_delete(std::string_view path) {
     return {path, static_cast<std::uint8_t>(method::DEL)};
 }
+constexpr http_action http_head(std::string_view path) {
+    return {path, static_cast<std::uint8_t>(method::HEAD)};
+}
+constexpr http_action http_patch(std::string_view path) {
+    return {path, static_cast<std::uint8_t>(method::PATCH)};
+}
+constexpr http_action http_options(std::string_view path) {
+    return {path, static_cast<std::uint8_t>(method::OPTIONS)};
+}
+constexpr http_action http_trace(std::string_view path) {
+    return {path, static_cast<std::uint8_t>(method::TRACE)};
+}
+constexpr http_action http_connect(std::string_view path) {
+    return {path, static_cast<std::uint8_t>(method::CONNECT)};
+}
 
 // ---------------------------------------------------------------------------
 // controller: the scannable annotation.

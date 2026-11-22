@@ -65,9 +65,9 @@ std::string_view reason_phrase(unsigned status) {
 std::string serialize_response(
     unsigned status, std::string_view content_type,
     const std::vector<std::pair<std::string, std::string>>& extra_headers,
-    std::string_view body, bool keep_alive) {
+    std::string_view body, bool keep_alive, bool head_only) {
     std::string out;
-    serialize_response(out, status, content_type, extra_headers, body, keep_alive);
+    serialize_response(out, status, content_type, extra_headers, body, keep_alive, head_only);
     return out;
 }
 
@@ -106,7 +106,7 @@ void append_last_chunk(std::string& out) { out += "0\r\n\r\n"; }
 
 void serialize_response(std::string& out, unsigned status, std::string_view content_type,
                         const std::vector<std::pair<std::string, std::string>>& extra_headers,
-                        std::string_view body, bool keep_alive) {
+                        std::string_view body, bool keep_alive, bool head_only) {
     out.clear();   // capacity is kept on purpose: one buffer per connection
 
     out += "HTTP/1.1 ";

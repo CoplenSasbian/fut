@@ -861,6 +861,41 @@ Two lifetime rules, both enforced by tests:
   inside run()" in a per-module thread-local, so the DLL reads a different copy and always gets
   `false`. Prove the loop is live by scheduling something on it (the timer above) instead.
 
+## Verbs
+
+| Annotation | Method | Notes |
+| --- | --- | --- |
+| `fut::http_get(path)` | GET | |
+| `fut::http_head(path)` | HEAD | a registered HEAD wins; otherwise the GET route answers without a body |
+| `fut::http_post(path)` | POST | |
+| `fut::http_put(path)` | PUT | |
+| `fut::http_patch(path)` | PATCH | |
+| `fut::http_delete(path)` | DELETE | the enum is `method::DEL`, because `<windows.h>` defines `DELETE` |
+| `fut::http_options(path)` | OPTIONS | a registered OPTIONS wins; otherwise the router answers **204 + `Allow`** |
+| `fut::http_trace(path)` | TRACE | |
+| `fut::http_connect(path)` | CONNECT | |
+
+```cpp
+enum class method : std::uint8_t { GET, HEAD, POST, PUT, DEL, PATCH, OPTIONS, TRACE, CONNECT };
+fut::to_string(method)                  // "PATCH"
+fut::method_from_string("TRACE")        // method::TRACE
+```
+
+Two of them need no handler: **HEAD** is answered by the GET route with the body suppressed (the
+`Content-Length` still describes what GET would return), and **OPTIONS** returns 204 with an
+`Allow` header computed from the routes on that path. Both also appear in the `Allow` header of a
+405, so a client can discover what a resource supports:
+
+```bash
+curl -I  http://127.0.0.1:8080/api/demo/ping     # HEAD: 200, Content-Length: 26, no body
+curl -X OPTIONS -D- -o /dev/null http://127.0.0.1:8080/api/demo/items/7
+# HTTP/1.1 204 No Content
+# Allow: PUT, DELETE, PATCH, GET, HEAD, OPTIONS
+
+curl -X TRACE -D- -o /dev/null http://127.0.0.1:8080/api/demo/ping
+# HTTP/1.1 405 Method Not Allowed
+# Allow: GET, HEAD, OPTIONS
+```
 ## Parameter binding
 
 | Parameter annotation | Source |

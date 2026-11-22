@@ -31,28 +31,32 @@ namespace fut {
 // method -- the HTTP verb
 // ---------------------------------------------------------------------------
 
+
 enum class method : std::uint8_t {
     GET,
+    HEAD,
     POST,
     PUT,
-    DEL,   // "DELETE" is a Windows macro
+    DEL,
+    PATCH,
+    OPTIONS,
+    TRACE,
+    CONNECT,
 };
 
+inline constexpr std::array<std::string_view, 9> method_names{
+    "GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "TRACE", "CONNECT"};
+
 constexpr std::string_view to_string(method m) {
-    switch (m) {
-    case method::GET:  return "GET";
-    case method::POST: return "POST";
-    case method::PUT:  return "PUT";
-    case method::DEL:  return "DELETE";
-    }
-    return "UNKNOWN";
+    const auto i = static_cast<std::size_t>(m);
+    return i < method_names.size() ? method_names[i] : std::string_view{"UNKNOWN"};
 }
 
-inline std::optional<method> method_from_string(std::string_view s) {
-    if (s == "GET") return method::GET;
-    if (s == "POST") return method::POST;
-    if (s == "PUT") return method::PUT;
-    if (s == "DELETE") return method::DEL;
+// HEAD is answered by the GET route when nothing else matches, so it needs no
+// handler of its own; OPTIONS is answered with Allow when unregistered.
+constexpr std::optional<method> method_from_string(std::string_view s) {
+    for (std::size_t i = 0; i < method_names.size(); ++i)
+        if (method_names[i] == s) return static_cast<method>(i);
     return std::nullopt;
 }
 

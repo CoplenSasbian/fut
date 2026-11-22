@@ -16,7 +16,7 @@ asio::awaitable<void> stream_controller::events(fut::response& out) {
         co_await out.sse("tick", std::to_string(i));
         if (g_io != nullptr) {
             asio::steady_timer timer{*g_io};
-            timer.expires_after(std::chrono::milliseconds{20});
+            timer.expires_after(std::chrono::milliseconds{500});
             co_await timer.async_wait(asio::use_awaitable);
         }
     }
