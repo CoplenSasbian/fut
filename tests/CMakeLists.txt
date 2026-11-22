@@ -1,5 +1,12 @@
 # ---- doctest suite ----
 
+# Portability guard: no operating-system code outside the platform layer.
+# Runs on every platform, so a Windows-only #ifdef cannot creep back in.
+add_test(NAME platform-audit
+         COMMAND ${CMAKE_COMMAND}
+                 -DROOT=${PROJECT_SOURCE_DIR}
+                 -P ${PROJECT_SOURCE_DIR}/cmake/check_portability.cmake)
+
 # The vcpkg-generated doctestConfig.cmake only defines the target; pull in the
 # official per-case discovery script as well.
 if(NOT COMMAND doctest_discover_tests)

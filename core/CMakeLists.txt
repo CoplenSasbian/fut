@@ -30,6 +30,11 @@ endif()
 
 add_library(fut::core ALIAS fut_core)
 
+# std::thread needs -pthread on POSIX; PUBLIC so every executable and app
+# library linking fut::core gets the right link flags too.
+find_package(Threads REQUIRED)
+target_link_libraries(fut_core PUBLIC Threads::Threads)
+
 target_compile_definitions(fut_core PRIVATE FUT_CORE_BUILD)
 
 target_include_directories(fut_core PUBLIC

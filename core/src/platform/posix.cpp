@@ -77,6 +77,8 @@ std::string_view ansi_color(int severity) noexcept {
 
 } // namespace
 
+bool reuse_address_is_safe() noexcept { return true; }   // see platform.hpp
+
 bool stdout_is_terminal() noexcept { return ::isatty(fileno(stdout)) != 0; }
 
 void console_write(std::string_view text, int severity) noexcept {

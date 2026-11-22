@@ -86,3 +86,43 @@ Boost.DLL would cover the loading part, but not the console, the clock or the
 executable path, and at that point the layer is four functions and one class --
 less code than the glue to integrate a dependency, with no extra DLL to ship and
 no build-configuration surface to support.
+
+## The audit
+
+Every file outside `core/src/platform/` was checked for the things that
+usually break a port, and the guard below keeps the result from drifting.
+
+| Found | Where | Fixed how |
+| --- | --- | --- |
+| `strftime` for the HTTP `Date` header | `http_message.cpp` | the header is built from fixed English tables: `strftime` honours `LC_TIME`, and a German or French locale would have produced an invalid `Date` |
+| `SO_REUSEADDR` set unconditionally | `listener.cpp` | `platform::reuse_address_is_safe()`: true on POSIX (reuse a port in `TIME_WAIT`), false on Windows (the same option lets another process take the port) |
+| no `-pthread` on POSIX | `core/CMakeLists.txt` | `find_package(Threads)` + `Threads::Threads` linked **PUBLIC** from `fut_core`, so every executable and app library inherits it |
+| `LoadLibraryA` / `dlopen` split in the loader | `app_loader.cpp` | the platform layer (this document) |
+| `/proc/self/exe` only | `server.cpp` | `platform::executable_path()` with a macOS branch |
+| MinGW-only configure presets | `CMakePresets.json` | `linux` and `linux-debug` presets (GCC, `x64-linux`) next to the MinGW ones |
+
+Checked and already portable:
+
+* **File IO** is binary everywhere (`std::ifstream(..., std::ios::binary)` in the
+  config reader, `fopen(..., "ab")` for log files), so no CRLF translation.
+* **Log rotation** closes the file before rename/remove -- on Windows an open
+  file cannot be renamed, on POSIX it can, and the code does the safe thing on
+  both.
+* **Paths** are `std::filesystem` values; no hard-coded separators, no drive
+  letters. The only literal path is the default `logs/fut.log`, which is
+  resolved by the same code on every platform.
+* **Sockets, timers, signals** go through Asio, which owns the per-platform
+  details; `ws2_32`/`mswsock` are linked inside `if(WIN32)` only.
+* **Time** is `std::time_t`/`std::tm` (no `long`, no `timeval`) through the
+  platform layer.
+* **Tests** take their directories from `std::filesystem::temp_directory_path()`
+  and from `FUT_APPS_DIR`, never from a literal.
+
+## The guard
+
+`cmake/check_portability.cmake` is registered as the `platform-audit` test: it
+scans every source outside `core/src/platform/` (and `fut/export.hpp`, which
+speaks to compilers rather than systems) for `_WIN32`, `__APPLE__`,
+`__linux__`, `_MSC_VER`, `unistd.h` and `windows.h`, and **fails the suite** if
+one appears. A Windows-only shortcut therefore cannot be committed without the
+build telling you where the platform layer expects it.

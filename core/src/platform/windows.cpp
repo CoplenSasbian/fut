@@ -94,6 +94,8 @@ std::uint16_t severity_attribute(int severity) noexcept {
 
 } // namespace
 
+bool reuse_address_is_safe() noexcept { return false; }   // see platform.hpp
+
 bool stdout_is_terminal() noexcept {
     const HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     if (out == INVALID_HANDLE_VALUE || out == nullptr) return false;

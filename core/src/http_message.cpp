@@ -49,8 +49,9 @@ void http_request_message::clear() {
     keep_alive = true;
 }
 
-// RFC 7231 IMF-fixdate, cached per second: a response without Date is legal
-// but every proxy and cache wants one, and the format is O(1) to reuse.
+// RFC 7231 IMF-fixdate, cached per second. Built from fixed English tables:
+// std::strftime honours LC_TIME, and a Date header has to be English whatever
+// locale the embedding program selected.
 namespace {
 
 std::string_view http_date() {
@@ -62,8 +63,18 @@ std::string_view http_date() {
     std::lock_guard<std::mutex> lock(m);
     if (now != cached_at) {
         const std::tm tm = fut::platform::utc_time(now);
+        static constexpr std::string_view day_names[] = {"Sun", "Mon", "Tue",
+                                                         "Wed", "Thu", "Fri", "Sat"};
+        static constexpr std::string_view month_names[] = {
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+        const auto day = static_cast<std::size_t>(tm.tm_wday % 7);
+        const auto month = static_cast<std::size_t>(tm.tm_mon % 12);
         char buf[32];
-        std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", &tm);
+        std::snprintf(buf, sizeof(buf), "%.3s, %02d %.3s %04d %02d:%02d:%02d GMT",
+                      day_names[day].data(), tm.tm_mday, month_names[month].data(),
+                      tm.tm_year + 1900, tm.tm_hour, tm.tm_min, tm.tm_sec);
         cached = buf;
         cached_at = now;
     }

@@ -12,6 +12,7 @@
 
 #include <fut/json.hpp>
 #include <fut/log.hpp>
+#include <fut/platform.hpp>
 
 #include "http_parser.hpp"
 
@@ -229,7 +230,10 @@ listener::listener(asio::io_context& ioc, std::string host, unsigned short port,
 asio::awaitable<void> listener::listen() {
     const tcp::endpoint ep{asio::ip::make_address(host_), port_};
     acceptor_.open(ep.protocol());
-    acceptor_.set_option(tcp::acceptor::reuse_address(true));
+    // Only where it means "reuse a port in TIME_WAIT"; on Windows the same
+    // option lets another process take the port, so it stays off.
+    if (fut::platform::reuse_address_is_safe())
+        acceptor_.set_option(tcp::acceptor::reuse_address(true));
     acceptor_.bind(ep);
     acceptor_.listen(asio::socket_base::max_listen_connections);
     srv_log.info("listening on http://{}:{}", host_, (unsigned)port_);

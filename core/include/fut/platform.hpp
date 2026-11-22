@@ -109,6 +109,12 @@ private:
 // Console
 // ---------------------------------------------------------------------------
 
+// Whether SO_REUSEADDR means "bind a port that is still in TIME_WAIT" here.
+// On POSIX it does, and a server wants it. On Windows it means "let another
+// process steal the port", so the acceptor keeps the default exclusive
+// behaviour instead.
+[[nodiscard]] FUT_API bool reuse_address_is_safe() noexcept;
+
 // True when stdout is a terminal, so a caller can skip colour for a pipe.
 [[nodiscard]] FUT_API bool stdout_is_terminal() noexcept;
 
