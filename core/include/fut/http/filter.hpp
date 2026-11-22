@@ -13,9 +13,14 @@
 // it to router_module::add_middleware, so an app never writes the registration
 // boilerplate -- and never has to reach for fut::scannable for this.
 //
-// Scope is the app being loaded. Order is declaration order: the first filter
-// declared is the outermost, so it sees the response after the inner ones --
-// including a response an inner filter produced by short-circuiting.
+// Scope is the app being loaded. Order is explicit and numeric: the smallest
+// value runs first (is the outermost), so it sees the response after the inner
+// ones -- including a response an inner filter produced by short-circuiting.
+// Equal values keep declaration order.
+//
+//     [[=fut::filter{-100}]] guard  // runs before everything
+//     [[=fut::filter{}}]]     stamp  // 0, the default
+//     [[=fut::filter{100}]]  audit  // runs last (innermost)
 //
 // The signature is enforced at compile time (the conversion below plus the
 // static_asserts), so a typo in a parameter type fails the build instead of
@@ -32,6 +37,11 @@
 namespace fut {
 
 struct filter : scannable {
+    int order = 0;   // smaller runs first; 0 when unset
+
+    constexpr filter() = default;
+    constexpr explicit filter(int value) : order(value) {}
+
     template <std::meta::info Entity>
     void operation(fut_ctx* ctx) const {
         static_assert(std::meta::is_function(Entity),
@@ -50,7 +60,8 @@ struct filter : scannable {
         constexpr http::middleware_hook hook = static_cast<http::middleware_hook>(&[: Entity :]);
 
         const http::router_module* rm = http::router_of(ctx);
-        if (rm != nullptr && rm->add_middleware != nullptr) rm->add_middleware(rm->self, hook);
+        if (rm != nullptr && rm->add_middleware != nullptr)
+            rm->add_middleware(rm->self, hook, order);
     }
 };
 

@@ -15,11 +15,11 @@
 
 namespace demo {
 
-[[=fut::filter{}]]
+[[=fut::filter{-100}]]  // outermost: measures the whole request, incl. the guard
 asio::awaitable<void> stamp(const fut::request& req, const fut::path_match& params,
                             fut::response& out, const fut::http::next_fn& next);
 
-[[=fut::filter{}]]
+[[=fut::filter{0}]]     // inside the stamp: a 401 still gets the headers/timing
 asio::awaitable<void> guard(const fut::request& req, const fut::path_match& params,
                             fut::response& out, const fut::http::next_fn& next);
 

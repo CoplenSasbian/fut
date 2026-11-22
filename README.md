@@ -608,11 +608,23 @@ asio::awaitable<void> stamp(const fut::request& req, const fut::path_match& para
 } // namespace demo
 ```
 
-`fut::filter` enforces the signature at compile time (return type and parameter types), and
-declaration order is run order: the first filter declared is outermost. The demo app shows the
-three shapes in `apps/demo/middleware.hpp` — **rewriting** (calls `next()`, adds headers),
-**filtering** (answers 401 itself, never calling `next()`), and **failing** (throws
-`fut::http_error`, which the router maps like a handler error).
+`fut::filter` enforces the signature at compile time (return type and parameter types). **Order is
+explicit and numeric: the smallest value runs first (outermost)**, ties keep declaration order:
+
+```cpp
+[[=fut::filter{-100}]] asio::awaitable<void> stamp(...);  // outermost: times the whole request
+[[=fut::filter{0}]]    asio::awaitable<void> guard(...);  // default order, runs inside
+[[=fut::filter{100}]]  asio::awaitable<void> audit(...);  // innermost
+```
+
+The platform chain (`fut::exec::server::add_middleware`) takes the same order argument, so the
+executable's chain and an app's chain are built the same way and sorted once in `finalize()`.
+
+The demo app shows the three shapes in `apps/demo/middleware.hpp` — **rewriting** (calls `next()`,
+adds headers), **filtering** (answers 401 itself, never calling `next()`), and **failing** (throws
+`fut::http_error`, which the router maps like a handler error). A short-circuit still passes back
+through the outer middleware, so the 401 carries the outer headers; a **throw** unwinds the outer
+frames, so the router answers that one alone.
 
 **Why not cross-app?** Apps are independent deployment units: an app's DLL is swapped without
 rebuilding anything else, and a middleware registered by one app must not silently change another

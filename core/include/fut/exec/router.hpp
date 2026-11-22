@@ -66,10 +66,12 @@ public:
 
     // App middleware arrives as a function pointer (see middleware_hook): the
     // executable owns the std::function wrappers it builds from it.
-    void add_middleware(fut::http::middleware_hook fn);
+    // Smaller order runs earlier (outer). Ties keep registration order. The
+    // chains are sorted once in finalize(); smaller order runs first.
+    void add_middleware(fut::http::middleware_hook fn, int order = 0);
 
     // Platform middleware: runs for every request, matched or not.
-    void add_global_middleware(fut::http::middleware_fn fn);
+    void add_global_middleware(fut::http::middleware_fn fn, int order = 0);
 
     // Wraps every route with its chains; call once after all apps are loaded.
     // Until then dispatch() falls back to the unwrapped route functions.
@@ -97,8 +99,12 @@ public:
 
     [[nodiscard]] std::span<const entry> entries() const { return entries_; }
     [[nodiscard]] std::span<const app_info> apps() const { return apps_; }
-    [[nodiscard]] std::span<const fut::http::middleware_fn> global_middleware() const {
-        return global_;
+    // The platform chain, in run order.
+    [[nodiscard]] std::vector<fut::http::middleware_fn> global_middleware() const {
+        std::vector<fut::http::middleware_fn> out;
+        out.reserve(global_.size());
+        for (const auto& e : global_) out.push_back(e.fn);
+        return out;
     }
 
     router() = default;
@@ -110,7 +116,7 @@ private:
 
     static void add_route_thunk(void* self, fut::method m, std::string_view pattern,
                                 fut::http::route_fn fn);
-    static void add_middleware_thunk(void* self, fut::http::middleware_hook fn);
+    static void add_middleware_thunk(void* self, fut::http::middleware_hook fn, int order);
 
     boost::asio::awaitable<void> dispatch_chain(const fut::request& req,
                                                 fut::response& out) const;
@@ -121,8 +127,18 @@ private:
     fut::http::router_module module_{this, &add_route_thunk, &add_middleware_thunk};
     std::vector<entry> entries_{};
     std::vector<app_info> apps_{};
-    std::vector<fut::http::middleware_fn> global_{};
-    std::unordered_map<std::string, std::vector<fut::http::middleware_hook>> app_chains_{};
+    // Chain entries carry their order; finalize() sorts each chain once, so a
+    // request walks a plain vector.
+    struct chain_entry {
+        int order = 0;
+        fut::http::middleware_fn fn{};
+    };
+    static bool by_order(const chain_entry& a, const chain_entry& b) {
+        return a.order < b.order;   // stable_sort: ties keep registration order
+    }
+
+    std::vector<chain_entry> global_{};
+    std::unordered_map<std::string, std::vector<chain_entry>> app_chains_{};
     std::size_t current_app_ = npos;
     std::function<fut::response(unsigned, std::string_view)> error_handler_{};
 };

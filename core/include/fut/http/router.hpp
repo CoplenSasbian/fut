@@ -76,8 +76,9 @@ struct router_module {
     void (*add_route)(void* self, method m, std::string_view pattern, route_fn fn) = nullptr;
 
     // Register a middleware for the app currently being loaded. Every route
-    // that app registers runs through it; nothing else does.
-    void (*add_middleware)(void* self, middleware_hook fn) = nullptr;
+    // that app registers runs through it; nothing else does. order decides
+    // where: smaller is outer (runs earlier), ties keep registration order.
+    void (*add_middleware)(void* self, middleware_hook fn, int order) = nullptr;
 };
 
 // Convenience: the router module of a context, or nullptr. The type is the

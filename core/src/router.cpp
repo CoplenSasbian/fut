@@ -62,17 +62,17 @@ void router::add_route(fut::method m, std::string_view pattern, fut::http::route
     entries_.push_back(std::move(e));
 }
 
-void router::add_middleware(fut::http::middleware_hook fn) {
+void router::add_middleware(fut::http::middleware_hook fn, int order) {
     if (current_app_ < apps_.size()) {
-        app_chains_[apps_[current_app_].name].push_back(fn);
+        app_chains_[apps_[current_app_].name].push_back(chain_entry{order, fn});
     } else {
         // Registered outside an app window: treat it as platform middleware.
-        global_.push_back(fn);
+        global_.push_back(chain_entry{order, fn});
     }
 }
 
-void router::add_global_middleware(fut::http::middleware_fn fn) {
-    global_.push_back(std::move(fn));
+void router::add_global_middleware(fut::http::middleware_fn fn, int order) {
+    global_.push_back(chain_entry{order, std::move(fn)});
 }
 
 void router::add_route_thunk(void* self, fut::method m, std::string_view pattern,
@@ -80,8 +80,8 @@ void router::add_route_thunk(void* self, fut::method m, std::string_view pattern
     static_cast<router*>(self)->add_route(m, pattern, fn);
 }
 
-void router::add_middleware_thunk(void* self, fut::http::middleware_hook fn) {
-    static_cast<router*>(self)->add_middleware(fn);
+void router::add_middleware_thunk(void* self, fut::http::middleware_hook fn, int order) {
+    static_cast<router*>(self)->add_middleware(fn, order);
 }
 
 void router::begin_app(std::string_view name, std::string_view prefix) {
@@ -92,14 +92,19 @@ void router::begin_app(std::string_view name, std::string_view prefix) {
 void router::end_app() { current_app_ = npos; }
 
 void router::finalize() {
+    // Smaller order is outer (runs earlier); stable, so ties keep registration
+    // order. Sorted once here, walked as a plain vector per request.
+    std::stable_sort(global_.begin(), global_.end(), &router::by_order);
+    for (auto& [name, chain] : app_chains_)
+        std::stable_sort(chain.begin(), chain.end(), &router::by_order);
+
     for (entry& e : entries_) {
         // Wrap the hooks here: these std::functions belong to the executable,
         // so they stay destructible even after the app DLL is unloaded.
         std::vector<fut::http::middleware_fn> chain;
         const auto it = app_chains_.find(e.app);
         if (it != app_chains_.end())
-            for (const fut::http::middleware_hook hook : it->second)
-                chain.emplace_back(hook);
+            for (const chain_entry& ce : it->second) chain.push_back(ce.fn);
 
         const fut::http::route_fn raw = e.invoke;
         if (chain.empty()) {
@@ -223,6 +228,12 @@ asio::awaitable<void> router::dispatch_chain(const fut::request& req,
                                             fut::response& out) const {
     if (global_.empty()) co_return co_await dispatch_matched(req, out);
 
+    // The ordered platform chain, materialised once (the hooks are already
+    // sorted by finalize()).
+    std::vector<fut::http::middleware_fn> global_fns_;
+    global_fns_.reserve(global_.size());
+    for (const chain_entry& ce : global_) global_fns_.push_back(ce.fn);
+
     // Platform middleware sees every request, including the ones that will
     // not match anything, so it gets no path parameters.
     terminal_fn terminal = [this](const fut::request& r, const fut::path_match&,
@@ -230,7 +241,7 @@ asio::awaitable<void> router::dispatch_chain(const fut::request& req,
         co_return co_await dispatch_matched(r, o);
     };
     const fut::path_match none{};
-    co_return co_await run_chain(global_, 0, terminal, req, none, out);
+    co_return co_await run_chain(global_fns_, 0, terminal, req, none, out);
 }
 
 // The one place where errors become responses: an action, a middleware or a

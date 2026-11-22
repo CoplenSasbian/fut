@@ -420,3 +420,42 @@ TEST_CASE("a JSON body built by hand is still JSON") {
     CHECK(fut::utf8_valid(invalid.body));            // U+FFFD instead
     CHECK(invalid.body.find("\xEF\xBF\xBD") != std::string::npos);
 }
+
+TEST_CASE("middleware order: smaller runs first, ties keep declaration order") {
+    fut::exec::router rt;
+    rt.begin_app("x", "/x");
+    rt.add_route(fut::method::GET, "/x/ping", &dummy);
+    rt.end_app();
+
+    // registered out of order on purpose: 10, -10, 0, then another 0
+    auto add = [&rt](const char* name, int order) {
+        rt.add_global_middleware(
+            [name](const fut::request& req, const fut::path_match& params, fut::response& out,
+                   const fut::http::next_fn& next) -> asio::awaitable<void> {
+                co_await next(req, params, out);
+                out.headers.emplace_back("X-Order", name);
+                co_return;
+            },
+            order);
+    };
+    add("ten", 10);
+    add("minus-ten", -10);
+    add("zero-a", 0);
+    add("zero-b", 0);
+    rt.finalize();
+
+    const auto res = run(rt, "GET", "/x/ping");
+    std::vector<std::string> order;
+    for (const auto& [name, value] : res.headers)
+        if (name == "X-Order") order.push_back(value);
+    REQUIRE(order.size() == 4);
+    // outer runs first, so it appends last: -10, 0a, 0b, 10 reversed
+    CHECK(order[0] == "ten");
+    CHECK(order[1] == "zero-b");    // equal orders: last declared is inner
+    CHECK(order[2] == "zero-a");
+    CHECK(order[3] == "minus-ten");
+
+    // and the platform chain reports the same order
+    const auto chain = rt.global_middleware();
+    CHECK(chain.size() == 4);
+}
