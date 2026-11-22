@@ -1,13 +1,14 @@
 #pragma once
 
-// The request and the response are rich enough to write a whole service
-// without a single binding annotation: take the request, read what you need,
-// build the response.
+// The request and the response, used directly -- no binding annotations.
 //
-//     const fut::request&  method, path, query, body, headers, remote
-//     const fut::path_match&  the captured path segments
+//   const fut::request&   what arrived (a view; the connection owns the bytes)
+//   const fut::path_match& the captured path segments
 //
-// Nothing below uses from_body / from_query / from_path / from_header.
+// The action returns a fut::response value: status, media type, headers, body.
+// The connection takes it over (absorb) and its own response writes it -- an
+// action only takes fut::response& when it wants to write the body itself
+// (streaming, see routes/stream.*).
 
 #include "../common.hpp"
 #include "../dto.hpp"
@@ -25,7 +26,7 @@ struct [[=fut::controller("/raw")]] raw_controller {
     asio::awaitable<fut::response> create(const fut::request& req,
                                           const fut::path_match& params);
 
-    // A response that is nothing but status + headers + body.
+    // Status, media type, headers and a cookie, all on one value.
     [[=fut::http_get("/created")]]
     asio::awaitable<fut::response> created();
 };

@@ -646,10 +646,16 @@ Two implementation notes:
 `fut::response` is what to send **and** the writing of it. Two modes, one type:
 
 * **unbound** — a plain value. An action fills `status`, headers, media type and body and returns
-  it; the connection's response takes it over (`absorb`) and writes it.
-* **bound** — created by the connection at the start of the request. The same object can write
-  itself: `begin()` sends the head, `write()` a body chunk, `end()` finishes. That is streaming,
-  with no second abstraction: no separate stream type, no parallel header handling.
+  it; the connection's response takes it over (`absorb`) and writes it. This is the normal path:
+  `return` a DTO, a `std::string`, or a `fut::response` (a description, not a writer).
+* **bound** — created by the connection at the start of the request and handed to an action that
+  takes `fut::response&`. The same object can write itself: `begin()` sends the head, `write()` a
+  body chunk, `end()` finishes. That is streaming, with no second abstraction: no separate stream
+  type, no parallel header handling.
+
+So: **return a value** unless the action must write the body as it goes; then **take
+`fut::response&`**. The demo shows both — `/api/demo/events` takes the response, `/api/demo/raw/*`
+returns values.
 
 ```cpp
 [[=fut::http_post("/items")]]                       // ordinary: return a value

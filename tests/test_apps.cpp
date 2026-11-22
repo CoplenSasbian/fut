@@ -28,9 +28,28 @@ struct run_state {
     std::exception_ptr err{};
 };
 
-asio::awaitable<void> invoke_into(run_state& st, const fut::exec::router& rt, fut::request req) {
+asio::awaitable<void> invoke_into(run_state& st, const fut::exec::router& rt,
+                                  std::string method, std::string path, std::string query,
+                                  std::string body,
+                                  std::vector<std::pair<std::string, std::string>> headers) {
+    // The request views these copies, which live in the coroutine frame: the
+    // caller's strings may be gone by the time the coroutine actually runs.
+    std::vector<std::pair<std::string_view, std::string_view>> header_views;
+    header_views.reserve(headers.size());
+    for (const auto& [name, value] : headers) header_views.emplace_back(name, value);
+
+    fut::request req{method, path, path, query, body, header_views};
     try {
-        st.res = co_await rt.dispatch(req);
+        // Every request has one response object, and the connection owns it.
+        // Here the harness plays the connection: it binds the response, hands it
+        // to the action through the request, then takes over whatever the action
+        // returned.
+        fut::response conn_response;
+        req.body_response = &conn_response;
+
+        fut::response produced = co_await rt.dispatch(req);
+        if (!conn_response.started()) conn_response.absorb(produced);
+        st.res = std::move(conn_response);
     } catch (...) {
         st.err = std::current_exception();
     }
@@ -45,9 +64,10 @@ fut::response run(asio::io_context& ioc, fut::exec::router& rt, fut::method m,
     run_state st;
     ioc.restart();   // run() stops the context when it drains
     asio::co_spawn(ioc,
-                   invoke_into(st, rt,
-                               fut::request{fut::to_string(m), path, path, query, body,
-                                            headers}),
+                   invoke_into(st, rt, std::string(fut::to_string(m)), std::string(path),
+                               std::string(query), std::string(body),
+                               std::vector<std::pair<std::string, std::string>>(
+                                   headers.begin(), headers.end())),
                    [](std::exception_ptr) {});
     ioc.run();
     if (st.err) std::rethrow_exception(st.err);
@@ -103,34 +123,55 @@ bool contains(const std::vector<logged_line>& lines, std::string_view group,
 
 TEST_SUITE("demo app DLL end-to-end") {
 
-TEST_CASE("load fut_app_demo and drive its routes") {
-    const char* dir = std::getenv("FUT_APPS_DIR");
-    REQUIRE(dir != nullptr);
-
-    // Declared first, destroyed last: the DLLs stay loaded until the router
-    // and the io_context (which may hold DLL handlers) are gone.
+// The app environment: loaded once for the whole binary, exactly like the
+// server does it. Reloading the DLLs for every subcase is not something a
+// deployment ever does, and repeatedly unloading a DLL that owns asio service
+// code is a good way to spend an afternoon in the debugger.
+struct app_env {
     fut::exec::app_loader loader;
     asio::io_context ioc;
     fut::exec::router rt;
     fut::exec::module_registry modules;
-    modules.add("io", typeid(asio::io_context).name(), &ioc);
-    static const fut::log::service log_service{nullptr, &capture};
-    modules.add("log", typeid(fut::log::service).name(),
-                const_cast<fut::log::service*>(&log_service));
+    std::vector<fut::exec::app_loader::entry> apps;
+};
 
-    const auto apps = loader.load_dir(dir, rt, modules);
-    REQUIRE(apps.size() == 1);
+app_env& env() {
+    static app_env e;   // built in place: nothing here is copyable
+
+    static bool loaded = false;
+    if (loaded) return e;
+    loaded = true;
+
+    const char* dir = std::getenv("FUT_APPS_DIR");
+    static const fut::log::service log_service{nullptr, &capture};
+    e.modules.add("io", typeid(asio::io_context).name(), &e.ioc);
+    e.modules.add("log", typeid(fut::log::service).name(),
+                  const_cast<fut::log::service*>(&log_service));
+
+    if (dir != nullptr) e.apps = e.loader.load_dir(dir, e.rt, e.modules);
 
     // Platform middleware: the executable's, sees every request.
-    rt.add_global_middleware([](const fut::request& req, const fut::path_match& params,
-                                const fut::http::next_fn& next)
-                                 -> asio::awaitable<fut::response> {
+    e.rt.add_global_middleware([](const fut::request& req, const fut::path_match& params,
+                                  const fut::http::next_fn& next)
+                                   -> asio::awaitable<fut::response> {
         if (req.header("x-block") == "1") co_return fut::error(401, "blocked");
         fut::response res = co_await next(req, params);
         res.headers.emplace_back("X-Platform", "1");
         co_return res;
     });
-    rt.finalize();
+    e.rt.finalize();
+    return e;
+}
+
+TEST_CASE("load fut_app_demo and drive its routes") {
+    REQUIRE(std::getenv("FUT_APPS_DIR") != nullptr);
+
+    app_env& e = env();
+    asio::io_context& ioc = e.ioc;
+    fut::exec::router& rt = e.rt;
+    const auto& apps = e.apps;
+
+    REQUIRE(apps.size() == 1);
 
     const auto* demo_app = find_app(apps, "demo");
     REQUIRE(demo_app != nullptr);
@@ -315,8 +356,10 @@ TEST_CASE("load fut_app_demo and drive its routes") {
             "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n"
             "Content-Type: text/plain\r\n\r\nupload-payload\r\n"
             "--" + boundary + "--\r\n";
+        // The value must outlive the view: a temporary would dangle.
+        const std::string content_type = "multipart/form-data; boundary=" + boundary;
         const std::pair<std::string_view, std::string_view> headers[] = {
-            {"Content-Type", "multipart/form-data; boundary=" + boundary}};
+            {"Content-Type", content_type}};
         const auto res = run(ioc, rt, fut::method::POST, "/api/demo/upload", body, "", headers);
         CHECK(res.status == 200);
         const auto v = fut::parse<upload>(res.body);
@@ -580,7 +623,7 @@ TEST_CASE("load fut_app_demo and drive its routes") {
         CHECK(ok.body.find("secure") != std::string::npos);
     }
 
-    SUBCASE("a middleware that throws is mapped like a handler error") {
+    {   // a middleware that throws is mapped like a handler error
         const std::pair<std::string_view, std::string_view> headers[] = {{"X-Demo-Burst", "1"}};
         const auto res = run(ioc, rt, fut::method::GET, "/api/demo/ping", "", "", headers);
         CHECK(res.status == 429);
