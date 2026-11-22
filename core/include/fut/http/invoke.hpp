@@ -236,8 +236,8 @@ boost::asio::awaitable<::fut::response> invoke_impl(const ::fut::request& req,
     if constexpr (wants_form) form = &*parsed_form;
 
     if constexpr (std::is_void_v<Val>) {
-        // A streaming action: it wrote through fut::stream. The placeholder is
-        // ignored when the stream was started.
+        // A streaming action: it wrote through the connection's response. The
+        // placeholder is ignored once that response has started.
         co_await ([: F :])(make_arg<F, P>(req, pm, form)...);
         co_return ::fut::response{};
     }

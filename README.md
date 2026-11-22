@@ -761,7 +761,7 @@ An app that needs its own error shape wraps the response in an app middleware in
 
 The context also publishes *services*: objects the server owns and an app may need. They are
 registered under a type and a name (see *How an app is loaded*), and the executable adds its own
-with `server_builder::add_module`:
+with `fut::exec::server::add_module`:
 
 ```cpp
 fut::exec::server().add_module("cache", &cache)   // keyed by typeid(cache)
